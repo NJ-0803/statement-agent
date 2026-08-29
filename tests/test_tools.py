@@ -109,6 +109,77 @@ class TestNonPurchaseEconomicTypesExcludedFromSpend:
         assert after_inr == before_inr  # the 10,000 withdrawal must NOT have inflated "spend"
 
 
+class TestCurrencyConversion:
+    """convert_to on aggregate_spending — the exact scenario named directly: 'what if
+    someone wants sum of transactions and one of the transactions is in another currency'.
+    """
+
+    def test_july_total_converted_to_inr_matches_hand_computed_figure(self):
+        ledger = _ledger()
+        result = aggregate_spending(
+            ledger, category=None, date_from=date(2025, 7, 1), date_to=date(2025, 7, 31), convert_to="INR"
+        )
+        # hand-computed: 102978.00 (INR-native) + 1727.85 + 29179.53 + 10336.58 (the three USD legs,
+        # each converted at its OWN transaction date's real ECB rate) = 144221.96
+        assert result.converted.currency == "INR"
+        assert Decimal(result.converted.verified_total) == Decimal("144221.96")
+        assert result.converted.failed_conversion_count == 0
+
+    def test_original_per_currency_breakdown_is_never_replaced_by_conversion(self):
+        ledger = _ledger()
+        result = aggregate_spending(
+            ledger, category=None, date_from=date(2025, 7, 1), date_to=date(2025, 7, 31), convert_to="INR"
+        )
+        # the honest per-currency figures must still be there, untouched, alongside the converted total
+        assert "INR" in result.by_currency and "USD" in result.by_currency
+        assert Decimal(result.by_currency["INR"].verified_total) == Decimal("102978.00")
+        assert Decimal(result.by_currency["USD"].verified_total) == Decimal("480.00")
+
+    def test_uncertain_split_preserved_through_conversion(self):
+        ledger = _ledger()
+        result = aggregate_spending(
+            ledger, category=None, date_from=date(2025, 7, 1), date_to=date(2025, 7, 31), convert_to="INR"
+        )
+        # the two duplicate-flagged July transactions are INR-native (identity conversion) and
+        # must stay in the uncertain bucket of the converted total too, not silently verified
+        assert Decimal(result.converted.uncertain_total) == Decimal("1110.00")
+
+    def test_different_dates_use_different_rates_not_one_blended_rate(self):
+        ledger = _ledger()
+        result = aggregate_spending(
+            ledger, category=None, date_from=date(2025, 7, 1), date_to=date(2025, 7, 31), convert_to="INR"
+        )
+        usd_details = [d for d in result.conversion_details if d.original_currency == "USD"]
+        assert len(usd_details) == 3
+        rates_used = {d.rate for d in usd_details}
+        assert len(rates_used) == 3  # three different transaction dates, three different real rates
+
+    def test_no_convert_to_means_no_conversion_fields_populated(self):
+        ledger = _ledger()
+        result = aggregate_spending(ledger, category="Dining")
+        assert result.converted is None
+        assert result.conversion_details == []
+
+    def test_unconvertible_currency_disclosed_not_silently_dropped(self):
+        import uuid
+
+        from statement_agent.resolve import refine_economic_type
+        from statement_agent.schema import Direction, EconomicType, Transaction
+
+        ledger = _ledger()
+        fake = Transaction(
+            transaction_id=str(uuid.uuid4()), document_id="synthetic", transaction_date=date(2025, 7, 15),
+            date_raw="2025-07-15", description_raw="MYSTERY MERCHANT", merchant_raw="MYSTERY MERCHANT",
+            amount=Decimal("100.00"), currency="XXX", direction=Direction.DEBIT, economic_type=EconomicType.PURCHASE,
+        )
+        ledger_with_fake = ledger + [fake]
+        result = aggregate_spending(
+            ledger_with_fake, category=None, date_from=date(2025, 7, 1), date_to=date(2025, 7, 31), convert_to="INR"
+        )
+        assert fake.transaction_id in result.converted.failed_conversion_ids
+        assert result.converted.failed_conversion_count >= 1
+
+
 class TestCurrencyIsNeverBlended:
     def test_usd_and_inr_reported_separately(self):
         ledger = _ledger()

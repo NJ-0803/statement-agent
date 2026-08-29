@@ -137,6 +137,14 @@ with a naive `str()` produces `"2025-06-21 00:00:00"`, which the ISO-date regex 
 rejects (it requires nothing after the day). Cell values are converted deliberately, not left to a
 generic `str()`.
 
+**Note on "does the agent know when to use what":** extraction-strategy selection — native text vs.
+vision OCR, which parser a file extension routes to — is decided entirely by this deterministic
+pre-ingestion pipeline (`quality.py`'s pass/fail check runs before any question is ever asked). The
+conversational agent (§4) never sees or chooses between extraction strategies; it only ever queries an
+already-normalized ledger. This is deliberate, not a shortcut — consistent, testable extraction
+behavior matters more than letting the LLM decide per-file, and it keeps a source of model
+non-determinism out of a step that should give the same result every time on the same input.
+
 **Why position-based extraction instead of naive text order:** discovered mid-build that a plain
 `pypdf.extract_text()` read of one statement produced what looked like two scrambled, interleaved
 tables — content-stream order didn't match visual order. Rebuilding from word coordinates instead
@@ -204,11 +212,42 @@ through `Decimal()`. `has_document(file_hash)` makes re-ingesting an unchanged f
 `sqlite3` needs zero installation. The `Decimal`-safety property lives in how `store.py` reads/writes
 values, not in which engine sits underneath — so this choice doesn't trade away any correctness.
 
-### 2.6 The agent (`agent/tools.py`, `verifier.py`, `prompts.py`, `loop.py`)
+### 2.6 Currency conversion (`fx.py`)
 
-Covered in detail in §3 below, since this is what you specifically asked about.
+**What:** `aggregate_spending`'s `convert_to` parameter converts and sums multi-currency spend into
+one target currency, using a bundled historical rate file (`data/eurofxref-hist.csv` — the European
+Central Bank's published EUR foreign-exchange reference rates), not a live API call. Every transaction
+converts using the rate quoted for **its own transaction date**, cross-computed through EUR (the
+file's implicit base); currencies never convert through today's rate or one rate blended across a
+date range. The converted total is always returned *alongside* the honest per-currency breakdown
+(`by_currency`), never in place of it, with per-transaction rate/date/source in `conversion_details`
+for citation, and any transaction that couldn't be converted explicitly listed in
+`failed_conversion_ids` rather than silently dropped.
 
-### 2.7 Two front ends, one core (`cli.py`, `web/app.py`)
+**Why a bundled file instead of a live API call — decided mid-build, after actually trying the live
+call first:** the first version called `frankfurter.dev` per transaction and hit two unrelated live
+failures on the first real test (a CA-certificate gap in this Python install, and an edge-protection
+403 on the default HTTP client's User-Agent) — both fixable, but both real fragility that has nothing
+to do with whether the underlying math is right. Directed to switch to a bundled open-data file
+instead; validating that choice, the *direct* CSV-download endpoint for ECB's own published rates
+returned a stale, partially corrupted cached copy (real data stopping in 2010, with a few rows of
+obviously fabricated placeholder values mixed in) before the ZIP-packaged endpoint gave the real,
+current file. A verified, version-controlled snapshot removes all of this at once: no network
+dependency at request time, and no risk of a corrupted remote response reaching a calculation
+silently — the file that ships is exactly the file that was inspected. Full story, including the
+live cross-check against the API's own numbers, in `DECISIONS.md` §17.
+
+**The disclosed trade-off:** the snapshot is a point-in-time download, not a live feed — a
+transaction dated after its last covered date has no rate, and `fx.py` returns `None` rather than
+estimating one, consistent with this system's INSUFFICIENT_INFORMATION-over-guessing policy
+throughout. Refreshing it is a deliberate, visible action, never something that happens silently
+underneath a request.
+
+### 2.7 The agent (`agent/tools.py`, `verifier.py`, `prompts.py`, `loop.py`)
+
+Covered in detail in §4 below, since this is what you specifically asked about.
+
+### 2.8 Two front ends, one core (`cli.py`, `web/app.py`)
 
 **What:** `cli.py` — `ingest` and `ask` subcommands (plus `serve` to launch the web UI). `web/app.py`
 — a small Flask app with `/api/status` and `/api/ask`, and a single-page dark-themed front end
@@ -223,9 +262,61 @@ for the two front ends to silently disagree.
 
 ---
 
-## 3. The agent loop and tool calls — what actually happens when you ask a question
+## 3. Why not RAG (embeddings, chunking, vector search)
 
-### 3.1 The ten tools
+Worth stating explicitly, because "an agent that answers questions from a folder of documents" sounds
+RAG-shaped on the surface, and it's a reasonable thing to expect here. It isn't one, deliberately —
+no sentence-transformers, no embedding model, no chunking, no vector index anywhere in this system.
+
+**What retrieval actually is here:** exact, deterministic filtering over a normalized SQLite table —
+the equivalent of `SELECT * FROM transactions WHERE category='Dining' AND date BETWEEN ? AND ?`. Every
+document is parsed into structured rows *once*, at ingestion time (§2.1–2.4). At question time, the
+agent doesn't search unstructured text for semantically similar chunks — it calls a Python function
+(`aggregate_spending`, `search_transactions`) that does an exact filter over every row in the table.
+
+**Why that's the right fit for this data, not a missed step:** RAG's value proposition is that your
+corpus is too big for context and you don't know in advance which parts are relevant, so you embed
+everything and pull the *k* most semantically similar chunks at query time. That's the right tool when
+the underlying data is unstructured prose (contracts, tickets, wikis) where "similar meaning" is a
+genuinely useful proxy for "relevant." Financial transactions aren't that — *"what did I spend on
+dining in June"* doesn't have a fuzzy, approximate answer; it has an exact one, every row where
+category=Dining and month=June, no more, no fewer. Building this as embed-and-retrieve-top-k would
+reintroduce, by design, exactly the failure mode fixed as EC-26 (`EDGE_CASES.md`) — correct arithmetic,
+incomplete retrieval: a semantic search can miss a real matching transaction because its embedding
+wasn't "close enough," and the agent would then correctly sum the ones it *did* retrieve — arithmetically
+right, silently wrong. Deterministic filtering over the full table structurally cannot do that: a row
+either matches the `WHERE` clause or it doesn't; there's no "close enough."
+
+**Does a much larger dataset change this answer?** Not for transaction-level retrieval — that's what a
+database is for. SQLite (or Postgres at real scale) indexes millions of rows and answers an exact
+filter in milliseconds, which scales better *and* more reliably than approximate-nearest-neighbor
+vector search would for this kind of tabular, exact-match data. The SQLite-over-DuckDB call (§2.5) was
+about deployment weight at *this* dataset's size, not about whether SQL-style filtering is the right
+retrieval strategy at scale — it is, at any scale, for structured data like this.
+
+**Where embeddings would genuinely earn their place, if this grew:**
+1. **Document-level discovery at very large document counts.** `list_documents` currently hands the
+   model metadata for every document — fine at 7, unwieldy at thousands. Even then, the natural fix is
+   more structured filtering (date range, account, filename pattern) over document *metadata*, not
+   semantic embedding — the metadata is structured, not prose, so RAG's core justification doesn't
+   apply here either. See `NOT_IMPLEMENTED.md` §G for a related, more urgent context-scaling issue
+   (no default row cap on `search_transactions` at very large transaction counts) that this doesn't cover.
+2. **If genuinely unstructured free-text content entered the picture** — handwritten margin notes,
+   support-chat transcripts about a dispute, narrative contract text — that's a different problem from
+   tabular transaction data, and *that's* where a real RAG pipeline (chunking, an embedding model, a
+   vector store) would be the correct architecture, because "semantically similar" becomes the actually
+   correct retrieval signal.
+
+Net: this was a deliberate fit-the-tool-to-the-data decision, not an oversight. "RAG" is often used as
+shorthand for "AI plus your documents" generally, but the right retrieval architecture depends entirely
+on whether the underlying data is structured or not — this dataset (bank/card statements, expense
+sheets) is fundamentally tabular once extracted, so it gets a tabular retrieval strategy.
+
+---
+
+## 4. The agent loop and tool calls — what actually happens when you ask a question
+
+### 4.1 The ten tools
 
 Everything the model can do is one of these. Nine return data; the tenth ends the turn.
 
@@ -235,14 +326,22 @@ Everything the model can do is one of these. Nine return data; the tenth ends th
 | `resolve_period` | Turns `"last_quarter"`, `"last_month"`, `"2025-Q2"` etc. into exact ISO start/end dates, correctly handling the year-boundary case | Let the model compute a date range by hand |
 | `list_documents` | Every source file, its declared account/currency/period, and any ingest-time `warnings` (security flags, structural anomalies) | Require a bank name to appear as a merchant string to be findable |
 | `search_transactions` | Raw filtered rows, with `sort_by`/`limit` for "the single largest transaction" | Compute any total |
-| `aggregate_spending` | The only way to get a spend number — per-currency `verified_total`/`uncertain_total`, optional `group_by`, and `possibly_missing_uncategorized_count` when filtered by category | Blend currencies, or hide flagged/uncategorized transactions silently |
+| `aggregate_spending` | The only way to get a spend number — per-currency `verified_total`/`uncertain_total`, optional `group_by`, `possibly_missing_uncategorized_count` when filtered by category, and an optional `convert_to` for a combined multi-currency total (§2.6) | Blend currencies without an explicit `convert_to`, or hide flagged/uncategorized transactions silently |
 | `compare_periods` | Two `aggregate_spending` calls side by side | — |
 | `find_disputable_transactions` | Every duplicate-flagged or anomaly-flagged row across the ledger | Declare anything fraud |
 | `summarize_statement` | Full breakdown for one source file (by currency, by category, flagged count) | — |
 | `get_sources` | Full provenance detail for a specific list of transaction IDs | — |
 | `final_answer` | **Terminal.** The only way a turn ends. | Get shown to the user without passing the verifier first |
 
-### 3.2 The loop, step by step (`agent/loop.py::run_agent`)
+**Note on the "query → which transactions to pull" abstraction:** there's no separate, serialized
+"query plan" object sitting between the natural-language question and the tool calls (unlike, e.g., the
+competing plan's `QueryPlan` dataclass). The tool schemas themselves — `category`, `date_from`/
+`date_to`, `currency` as structured arguments the model must fill in — *are* that abstraction layer;
+the tool call the model chooses to make is the plan. The closest thing to an inspectable plan today is
+the `--trace` output / `ToolCallRecord` list (§4.3), which shows the sequence after the fact rather
+than as a plan committed to before execution.
+
+### 4.2 The loop, step by step (`agent/loop.py::run_agent`)
 
 1. The system prompt (`agent/prompts.py`) + the 9 data tools + `final_answer` are sent to Claude along
    with the user's question.
@@ -271,7 +370,7 @@ Everything the model can do is one of these. Nine return data; the tenth ends th
    — e.g. `VERIFIED` with nonzero caveats is automatically corrected to `VERIFIED_WITH_CAVEATS`, since
    a model can't self-certify full confidence while listing open questions.
 
-### 3.3 A real trace, annotated
+### 4.3 A real trace, annotated
 
 From a live run of *"What did I spend on dining in Q2 2025?"*:
 
@@ -292,7 +391,7 @@ That caveat is the model's own observation from comparing step 1's requested ran
 actual coverage; the verifier didn't have to force it, but rule 4 in the system prompt asks for
 exactly this comparison before answering any period-scoped question.
 
-### 3.4 A second real trace — where two things fire together
+### 4.4 A second real trace — where two things fire together
 
 *"What's my biggest expense?"*:
 
@@ -313,7 +412,7 @@ one hiding what the other found.
 
 ---
 
-## 4. The trust boundary, restated plainly
+## 5. The trust boundary, restated plainly
 
 The one sentence that explains most of the design choices above: **the LLM is only ever asked to
 choose which deterministic function to call and to narrate the result — every number that reaches a

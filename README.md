@@ -75,7 +75,7 @@ thin wrapper over the exact same `Store`/`run_agent()` the CLI uses — no separ
 python -m pytest tests/ -v
 ```
 
-165 tests, all runnable offline with no API key — they cover normalization (currency/date parsing),
+183 tests, all runnable offline with no API key — they cover normalization (currency/date parsing),
 PDF/CSV extraction (including the injection-defense and duplicate-detection tests described below),
 resolution (categorization, duplicates, reconciliation, anomaly detection), the query/aggregation
 tools, and the answer verifier's grounding/provenance checks. See `DECISIONS.md` §11 for the three real
@@ -126,6 +126,12 @@ runs as part of `pytest tests/` via `tests/test_gold_eval.py`, one test per case
   source document even when that name never appears as a merchant string inside any transaction, and
   surface that document's ingest-time security/data-quality flags directly rather than making the
   agent re-derive them from raw data each time.
+- Convert and combine multi-currency spend into one total on request (e.g. "total spend in July, in
+  INR, including the USD charges") — every transaction converts using the real historical exchange
+  rate quoted for its OWN date, from a bundled open-data rate file (ECB reference rates, not a live
+  API call — see `DECISIONS.md` §17), with the converted figure always shown alongside, never instead
+  of, the honest per-currency breakdown. Relevant for a card issuer's customers specifically: foreign-
+  currency transactions happen even without leaving India.
 - Resist prompt injection embedded inside statement text — structurally (injected text can't become a
   transaction row in the first place; see `DECISIONS.md` §6), not just via a system-prompt request.
 - Say "I don't have enough information" when the ledger doesn't cover the question (e.g. a date range

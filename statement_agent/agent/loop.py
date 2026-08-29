@@ -85,7 +85,14 @@ TOOL_SCHEMAS = [
             "When `category` is set, also returns possibly_missing_uncategorized_count: other purchases "
             "in the same date/currency scope that couldn't be confidently categorized at all, so they "
             "were never checked against this category and might belong to it. If this is nonzero, the "
-            "total is a floor, not a guaranteed-complete figure — say so."
+            "total is a floor, not a guaranteed-complete figure — say so. "
+            "Set `convert_to` to also get one combined total in a single target currency — every "
+            "transaction is converted using the real exchange rate quoted for ITS OWN date (never "
+            "today's rate, never one blended rate), from a bundled historical ECB rate file, with the "
+            "rate and its date returned per transaction in `conversion_details` for citation. The "
+            "converted total is ADDITIONAL to by_currency, never a replacement for it — always report "
+            "both. Any transaction that couldn't be converted (rate unavailable) is excluded from the "
+            "converted total and listed in failed_conversion_ids — disclose this, never silently drop it."
         ),
         "input_schema": {
             "type": "object",
@@ -96,6 +103,7 @@ TOOL_SCHEMAS = [
                 "date_to": {"type": "string"},
                 "currency": {"type": "string"},
                 "group_by": {"type": "string", "enum": ["month", "category", "merchant"]},
+                "convert_to": {"type": "string", "description": "3-letter currency code, e.g. INR — converts and sums everything into this one currency, alongside the normal per-currency breakdown"},
             },
         },
     },
@@ -220,6 +228,7 @@ def _dispatch(tool_name: str, tool_input: dict, ledger: list[Transaction], docum
             date_to=_parse_date(tool_input.get("date_to")),
             currency=tool_input.get("currency"),
             group_by=tool_input.get("group_by"),
+            convert_to=tool_input.get("convert_to"),
         )
     if tool_name == "compare_periods":
         return T.compare_periods(

@@ -63,6 +63,14 @@ pick a silent reference period.
 5. Currency is never combined into a single number. If spend spans INR and USD, report them separately. \
 aggregate_spending already does this for you — never manually add amounts across currencies.
 
+5a. If a question implies wanting ONE combined number across currencies (e.g. "what's my total spend" \
+when some transactions are in USD, or an explicit "in INR" / "in dollars" ask), call aggregate_spending \
+again with convert_to set to the target currency, rather than attempting the conversion yourself. Report \
+BOTH the per-currency breakdown (rule 5) AND the converted combined total — the converted figure is \
+additional context, never a replacement for the honest per-currency numbers. Always mention the \
+conversion happened (it's not the transaction's original amount) and cite failed_conversion_count if \
+nonzero rather than silently treating an unconverted transaction as zero.
+
 6. Every aggregate_spending / compare_periods result is split into verified_total (clean, unambiguous \
 transactions) and uncertain_total (transactions flagged as possible duplicates or with implausible \
 dates). Always report the verified total as the headline number. If uncertain_total is nonzero, \

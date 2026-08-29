@@ -296,7 +296,7 @@ correctly rejected as "possible fabrication."
 
 ## 11. Test harness — what it caught
 
-`tests/` currently has 165 tests across normalization, economic-type refinement, deterministic period
+`tests/` currently has 183 tests across normalization, economic-type refinement, deterministic period
 resolution, CSV/PDF extraction, resolution, the query tools, and the verifier — all runnable offline
 with `pytest`, no API key needed. Plus `eval/gold_qa.py`, a separate gold-answer harness with 7
 hand-computed expected numbers checked against the real dataset (§ below this one has the full writeup
@@ -416,6 +416,15 @@ readings, and even correctly noted that the single-largest-transaction (₹80,00
 is uncategorized and therefore excluded from the category-total reading — EC-22 and EC-26 reinforcing
 each other in one real answer.
 
+**Update — this decision was independently re-raised.** An external capability checklist, reviewed
+after this section was written, separately asked for "if confidence is low, the agent should ask the
+user for more details instead of guessing" — the same idea considered and declined above, arrived at
+from a different direction. Two independent sources naming the same idea is a real signal the
+"present all interpretations, never ask" call may be worth revisiting, not just noise to dismiss. The
+architectural reasoning above still stands as of this writing (self-contained answers fit the brief's
+own "questions you haven't seen" framing better than a blocking follow-up), but this is flagged as a
+live, not fully settled, decision rather than a closed one.
+
 **EC-23 ("did I spend more this month?" ambiguity).** No stated comparison target — previous month?
 running average? same month last year? `resolve_period` already supported `last_month`, so this was a
 pure prompt fix (rule 4d): default to the immediately preceding calendar month, and state that default
@@ -471,3 +480,76 @@ matching logic:
 
 13 new tests (`tests/test_xlsx_parser.py`, `tests/test_image_parser.py`, plus new cases in
 `tests/test_pipeline.py`), all offline except the live end-to-end confirmations above. 165/165 passing.
+
+---
+
+## 17. Currency conversion — and why a bundled file beat a live API call
+
+The top item in `NOT_IMPLEMENTED.md` §F, explicitly prioritized: "keep currency exchange on
+priority, because what if someone wants sum of transactions and one of the transactions is in
+another currency" — a real scenario already present in `dataset_public/` (the AWS/Grand Hyatt/OpenAI
+USD charges sitting alongside INR spend in the same month).
+
+**First build: a live API call.** Started with `frankfurter.dev`, a free, keyless, historical-rate
+HTTPS API, called per transaction using its own date. Hit two real, unrelated failures on the very
+first live test, both worth recording because they're generically instructive, not specific to this
+API:
+1. `CERTIFICATE_VERIFY_FAILED` — this Python install (python.org's macOS installer) doesn't wire a
+   usable CA bundle into `ssl`'s default context; `curl` worked immediately (uses the OS trust store),
+   `urllib` didn't. Fixed with `certifi`.
+2. `HTTP 403` — the API's edge protection rejected the default `Python-urllib/3.x` User-Agent
+   specifically; an explicit, identifying UA fixed it.
+
+**Then reconsidered, per explicit direction:** *"don't use an API call, just fetch the currency
+exchange file from open source and mention this in the document."* Good call, validated by what
+happened next: the direct-download endpoint for ECB's own published historical-rates CSV
+(`eurofxref-hist.csv`) returned a **stale, partially corrupted cached copy** — real data stopping at
+2010-02-10 (15+ years short of what was needed), with three rows containing obviously fabricated
+placeholder values (`1,2,3,4,5...` sequential integers where real FX rates should be) mixed into
+otherwise-genuine historical data. The **ZIP-packaged** version of the same file
+(`eurofxref-hist.zip`) returned the real, current, clean file (7,082 rows, 1999-01-04 through
+2026-08-28, verified against the live API's own numbers for cross-check — 86.1382 vs. the live API's
+86.14 for the same USD→INR/2025-07-18 pair, matching to 4 significant figures).
+
+That's three independent failure modes in under ten minutes of actually trying to fetch external FX
+data — a cert issue, a bot-detection block, and a bad cache — none of which had anything to do with
+whether the underlying math was right. **Bundling a verified, version-controlled snapshot
+(`statement_agent/data/eurofxref-hist.csv`) removes all three at once**: no network dependency at
+request time, no SSL/UA fragility, and no runtime risk of silently ingesting a corrupted remote
+response — the data that ships is exactly the data that was inspected before being committed. This
+is the same reasoning already applied everywhere else in this build (never trust an external input
+blindly; validate before using) turned on the build's *own* tooling, not just on the user's documents.
+
+**The real, disclosed trade-off:** the bundled file is a snapshot, not a live feed. A transaction
+dated after the file's last covered date has no rate — `fx.py` returns `None` rather than reaching
+for a stale or estimated rate, consistent with the rest of this system's
+INSUFFICIENT_INFORMATION-over-guessing policy. Refreshing the snapshot is a deliberate, visible
+action (re-run the download, replace the file, re-verify), never something that happens silently.
+
+**Architecture (`statement_agent/fx.py`):**
+- Cross-rates computed through EUR (the file's implicit base): `rate(USD→INR) = rate(EUR→INR) /
+  rate(EUR→USD)` for the same date.
+- **Every transaction converts using the rate quoted for its OWN date**, not today's rate and not one
+  blended rate applied across a date range — the only honest way to combine multi-day, multi-currency
+  spend without misstating what the FX exposure actually was on each individual day.
+- Weekend/holiday fallback: nearest prior date with published data (ECB doesn't publish on weekends),
+  capped at a 10-day lookback so a genuinely uncovered gap returns `None` rather than reaching back
+  arbitrarily far.
+- A defensive value-plausibility check (reject rows outside 0.0001–1,000,000) directly defends against
+  the exact anomaly found while sourcing this data — a row with implausible tiny sequential values is
+  rejected rather than silently trusted, the same discipline as the malformed-CSV handling elsewhere.
+- Wired into `aggregate_spending` via a new `convert_to` parameter: returns a `converted` combined
+  total (verified/uncertain split preserved) **alongside**, never instead of, the honest per-currency
+  breakdown, plus per-transaction `conversion_details` (rate, rate date, source) for citation, and
+  explicit `failed_conversion_ids` for anything that couldn't be converted.
+
+**Live-verified** against the real July 2025 data (₹102,978.00 INR + $480.00 USD across three
+transactions on three different dates): asked *"What is my total spend in July 2025, in INR,
+including any foreign currency transactions?"* → correctly returned both the per-currency breakdown
+and a combined **₹144,221.96**, explicitly stated it used each transaction's own historical rate (not
+today's), and correctly reported zero failed conversions — matching a hand-computed check exactly
+(₹102,978.00 + ₹1,727.85 + ₹29,179.53 + ₹10,336.58 = ₹144,221.96).
+
+12 new tests (`tests/test_fx.py`), all offline (against the real bundled file, not mocks — a stronger
+test than mocking a fabricated API response), plus new `aggregate_spending` conversion tests in
+`tests/test_tools.py`. 177/177 passing.

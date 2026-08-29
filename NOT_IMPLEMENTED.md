@@ -2,9 +2,9 @@
 
 Everything knowingly left out of this build, consolidated in one place, each with the actual reasoning
 — not a vague "future work" list. Per the brief's own instruction ("note anything unfinished
-honestly"), this is written with the same rigor as `EDGE_CASES.md`'s gap entries, because that's
-exactly what most of these are: the 8 unresolved gaps from that audit, regrouped here by root cause
-and joined by a few things that predate that audit.
+honestly"), this is written with the same rigor as `EDGE_CASES.md`'s gap entries. §A–§E are the 8
+unresolved gaps from that audit, regrouped by root cause; §F and §G were surfaced later, by checking
+this build against an external capability checklist rather than the edge-case catalogue.
 
 None of what follows caused a wrong number to reach a user silently — that was checked, not assumed
 (see `EDGE_CASES.md`'s summary). What follows is capability that doesn't exist yet, disclosed rather
@@ -113,19 +113,83 @@ specifics — "duplicating a source document never changes the verified total," 
 rows never changes an aggregate answer," "adding an internal transfer never changes total spend." These
 are strong, cheap-to-state properties; not built for time, not because they're not valuable.
 
-**No persisted execution-trace log.** `--trace` on the CLI prints the tool-call sequence for the
-current run, and the web UI shows it per-answer, but neither is saved anywhere — a grader can inspect
-what the agent did on the question they just asked, but there's no log to review after the session
-ends. Cheap to add (the `ToolCallRecord` data already exists in memory); not done because it's a pure
-observability nicety with no correctness impact, and time went to the fixes that changed actual
-answers first.
+**No persisted execution-trace log, and no captured model reasoning.** `--trace` on the CLI prints the
+tool-call sequence for the current run, and the web UI shows it per-answer, but neither is saved
+anywhere — a grader can inspect what the agent did on the question they just asked, but there's no log
+to review after the session ends. What's captured is also narrower than "comprehensive": tool name +
+tool input, not tool *output*, and — since this build never requests Claude's extended-thinking blocks
+— there's no separate "why it chose this tool" reasoning text to capture even if the trace were
+persisted; the only artifacts are the tool-call sequence and the final `answer_text`. Cheap to add (the
+`ToolCallRecord` data already exists in memory, and thinking blocks are a request-time flag away);
+not done because it's a pure observability addition with no correctness impact on its own, and time
+went to the fixes that changed actual answers first.
+
+---
+
+## F. Currency conversion — built (no longer a gap)
+
+Was the top item here; now implemented (`statement_agent/fx.py`, wired into `aggregate_spending` via
+`convert_to`). See `DECISIONS.md` §17 for the full writeup — architecture, why a bundled open-data
+file was used instead of a live API call, and live-verified results. Left as a placeholder entry here
+rather than deleted outright, since the *reasoning for why it mattered* (flagged directly against this
+build's real context: a card issuer's customers routinely have foreign-currency transactions even
+without leaving India) is worth keeping visible next to the rest of this audit.
+
+---
+
+## G. Context/memory management as the ledger grows
+
+**What's missing:** any strategy for the ledger outgrowing what fits comfortably in the agent's
+context. Right now the *entire* ledger is loaded into memory and handed to `run_agent()` on every
+question (`cli.py`/`web/app.py` both call `store.all_transactions()` in full), and `search_transactions`
+has no default row cap — an unfiltered or loosely-filtered call against a hypothetical 100,000-row
+ledger would try to serialize thousands of `TxnView` rows into one tool result. `aggregate_spending`
+and `compare_periods` are safe at any scale (they return numbers, not raw rows), but `search_transactions`
+and `get_sources` aren't currently protected against this.
+
+**Why it's not built:** this dataset is ~90 transactions; the problem genuinely doesn't manifest here,
+and building a chunking/pagination/summarization strategy without a large real ledger to verify it
+against risks the same "unverified fix" trap as the extraction gaps in §B. The right first step is
+cheap and low-risk though — unlike most of §B, this doesn't need new matching logic, just bounds on
+what's already built: a sane default `limit` on `search_transactions` (already has the parameter,
+just no default cap), and eventually pagination on `list_documents` once document count, not just
+transaction count, gets large. Worth treating as a near-term fix rather than a deferred one, since
+unlike the linking layer it doesn't need fixture data to build safely — it only needs a sensible
+default value.
 
 ---
 
 ## Summary: what would change if this continued
 
-If picking exactly one item to build next: **A (the `EconomicEvent` linking layer)**. It's the root
-cause behind the largest number of individually-small gaps, and — unlike B and C — there's a clear,
-buildable path to it (merchant + amount + time-window matching, the same technique both this build and
-the source plans already describe) that just needs real fixture data with actual refund/EMI/
-reimbursement pairs to build and verify against safely.
+**§F (currency conversion) is done** — see `DECISIONS.md` §17. Of what's left:
+
+- **If optimizing for architectural completeness:** §A (the `EconomicEvent` linking layer). It's the
+  root cause behind the largest number of individually-small gaps, and — unlike §B and §C — there's a
+  clear, buildable path to it that just needs real fixture data with actual refund/EMI/reimbursement
+  pairs to build and verify against safely.
+- **If optimizing for cheap, near-term downside protection:** §G (context safety at scale) — a default
+  `limit` on `search_transactions`/`get_sources`, not new logic. Worth doing regardless of what else
+  gets picked, since it's pure protection with no design risk.
+
+---
+
+## Tool ideas floated, not committed
+
+Asked directly what other tools would extend the trust story rather than just add surface area — none
+of these are scoped or scheduled, just recorded so they don't get re-derived from scratch later:
+
+- **Merchant-alias normalization** as a standalone tool/pass — generalizes the ad-hoc "AMZN" keyword
+  fix from §D into something systematic.
+- **Recurring-charge / subscription detector** — distinct from duplicate detection; "this looks like a
+  monthly pattern" is a different signal than "this looks like the same charge twice."
+- **Budget/limit tracking tool** — "how much of my ₹X monthly dining budget is left" — needs a budget
+  concept that doesn't exist yet, so this implies its own small feature, not just a tool.
+- **Export/report tool** — hand the user back a clean statement or CSV of what the agent found, usable
+  outside the chat itself.
+- **"Explain this transaction" tool** — given one transaction ID, return its full context (nearby
+  transactions, why it was or wasn't flagged, its category reasoning) for a natural "why did you say
+  that" follow-up.
+- **A standalone single-amount conversion tool** (`convert_amount(120, "USD", "INR", date)` on its
+  own, separate from `aggregate_spending`'s `convert_to`) — for a one-off "how much is $120 in INR"
+  question that isn't about a transaction total. `fx.convert_amount` already exists and is tested;
+  this would just be a thin tool-schema wrapper around it, not new logic.

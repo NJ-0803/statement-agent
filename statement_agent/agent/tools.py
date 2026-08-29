@@ -154,6 +154,32 @@ class AggregateResult:
     # letting a category total look complete when it might not be.
     possibly_missing_uncategorized_count: int = 0
     possibly_missing_uncategorized_ids: list[str] = field(default_factory=list)
+    # Set only when convert_to is passed. The per-currency breakdown above is NEVER
+    # replaced by this — a converted combined total is reported ALONGSIDE the honest
+    # per-currency figures, never instead of them.
+    converted: "ConvertedTotal | None" = None
+    conversion_details: list["ConversionDetail"] = field(default_factory=list)
+
+
+@dataclass
+class ConversionDetail:
+    transaction_id: str
+    original_amount: str
+    original_currency: str
+    converted_amount: str
+    rate: str
+    rate_date: str  # the date the rate is actually quoted for (may differ from the transaction's own date on a weekend/holiday)
+    source: str
+
+
+@dataclass
+class ConvertedTotal:
+    currency: str
+    verified_total: str
+    uncertain_total: str
+    conversion_count: int
+    failed_conversion_count: int
+    failed_conversion_ids: list[str] = field(default_factory=list)
 
 
 def aggregate_spending(
@@ -165,6 +191,7 @@ def aggregate_spending(
     date_to: date | None = None,
     currency: str | None = None,
     group_by: str | None = None,  # "month" | "category" | "merchant" | None
+    convert_to: str | None = None,
 ) -> AggregateResult:
     matched = [
         t
@@ -229,10 +256,56 @@ def aggregate_spending(
         ]
         possibly_missing_ids = [t.transaction_id for t in same_scope_uncategorized]
 
+    converted = None
+    conversion_details: list[ConversionDetail] = []
+    if convert_to:
+        from ..fx import convert_amount
+
+        convert_to = convert_to.upper()
+        conv_verified = Decimal("0")
+        conv_uncertain = Decimal("0")
+        conv_count = 0
+        failed_ids: list[str] = []
+
+        for t in matched:
+            if t.transaction_date is None:
+                failed_ids.append(t.transaction_id)
+                continue
+            result = convert_amount(t.amount, t.currency, convert_to, t.transaction_date)
+            if result is None:
+                failed_ids.append(t.transaction_id)
+                continue
+            converted_amount, rate = result
+            conversion_details.append(ConversionDetail(
+                transaction_id=t.transaction_id,
+                original_amount=str(t.amount),
+                original_currency=t.currency,
+                converted_amount=str(converted_amount),
+                rate=str(rate.rate),
+                rate_date=rate.rate_date,
+                source=rate.source,
+            ))
+            if _is_clean(t):
+                conv_verified += converted_amount
+            else:
+                conv_uncertain += converted_amount
+            conv_count += 1
+
+        converted = ConvertedTotal(
+            currency=convert_to,
+            verified_total=str(conv_verified),
+            uncertain_total=str(conv_uncertain),
+            conversion_count=conv_count,
+            failed_conversion_count=len(failed_ids),
+            failed_conversion_ids=failed_ids,
+        )
+
     return AggregateResult(
         by_currency, verified_ids, uncertain_ids, group_breakdown,
         possibly_missing_uncategorized_count=len(possibly_missing_ids),
         possibly_missing_uncategorized_ids=possibly_missing_ids,
+        converted=converted,
+        conversion_details=conversion_details,
     )
 
 
