@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Statement Intelligence Agent</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  /*
+   * Same instrument-panel language as naap: dark ground, hairline panels,
+   * Chakra Petch for anything technical/labeled, one accent color, and
+   * status conveyed through the same mint / amber / red reservation —
+   * mint = clean, amber = caveats, red = insufficient / error.
+   */
+  :root {
+    --ground: #0a0d14;
+    --panel: #0f131c;
+    --panel-2: #131824;
+    --line: #1c2431;
+    --line-soft: #161d28;
+
+    --ink: #edf1f7;
+    --dim: #8296ad;
+    --faint: #5b6d83;
+
+    --red: #ff2e4c;
+    --red-dim: rgba(255, 46, 76, 0.14);
+    --mint: #4ade80;
+    --mint-dim: rgba(74, 222, 128, 0.14);
+    --amber: #ffa23a;
+    --amber-dim: rgba(255, 162, 58, 0.14);
+
+    --display: "Chakra Petch", ui-monospace, "SF Mono", Menlo, monospace;
+    --body: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 0;
+    font-family: var(--body);
+    background: var(--ground); color: var(--ink);
+    display: flex; flex-direction: column; height: 100vh;
+    -webkit-font-smoothing: antialiased;
+  }
+  header {
+    padding: 22px 28px 18px; border-bottom: 1px solid var(--line); background: var(--panel);
+    display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 8px;
+  }
+  header h1 {
+    font-family: var(--display); font-size: 19px; margin: 0; font-weight: 700;
+    letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink);
+  }
+  header h1 .mark { color: var(--red); }
+  header p { margin: 6px 0 0; font-size: 12px; color: var(--faint); max-width: 560px; line-height: 1.5; }
+  #status-bar {
+    font-family: var(--display); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--dim); padding: 10px 28px; background: var(--panel-2);
+    border-bottom: 1px solid var(--line);
+  }
+  #status-bar.error { color: var(--red); }
+  #chat {
+    flex: 1; overflow-y: auto; padding: 26px; display: flex; flex-direction: column; gap: 18px;
+    max-width: 800px; margin: 0 auto; width: 100%;
+  }
+  .row { display: flex; }
+  .row.user { justify-content: flex-end; }
+  .bubble-user {
+    background: var(--red-dim); color: var(--ink); border: 1px solid var(--red);
+    padding: 10px 15px; border-radius: 2px; max-width: 75%;
+    font-size: 14px; line-height: 1.5;
+  }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 2px;
+    padding: 16px 18px; max-width: 90%; font-size: 14px; line-height: 1.6; color: var(--ink);
+  }
+  .badge {
+    display: inline-block; font-family: var(--display); font-size: 10.5px; font-weight: 600;
+    letter-spacing: 0.16em; text-transform: uppercase;
+    padding: 4px 10px; border: 1px solid; margin-bottom: 10px;
+  }
+  .badge.VERIFIED { background: var(--mint-dim); color: var(--mint); border-color: var(--mint); }
+  .badge.VERIFIED_WITH_CAVEATS { background: var(--amber-dim); color: var(--amber); border-color: var(--amber); }
+  .badge.INSUFFICIENT_INFORMATION { background: var(--red-dim); color: var(--red); border-color: var(--red); }
+  .badge.ERROR { background: var(--red-dim); color: var(--red); border-color: var(--red); }
+  .answer-text { white-space: pre-wrap; }
+  .amounts { margin-top: 12px; }
+  .amount-pill {
+    display: inline-block; font-family: var(--display); font-variant-numeric: tabular-nums; font-size: 13px;
+    background: var(--panel-2); border: 1px solid var(--line); border-radius: 2px;
+    padding: 5px 10px; margin: 2px 6px 2px 0; color: var(--ink);
+  }
+  .caveats { margin-top: 12px; font-size: 12.5px; color: var(--dim); }
+  .caveats .k {
+    font-family: var(--display); font-size: 10.5px; letter-spacing: 0.2em; text-transform: uppercase;
+    color: var(--faint);
+  }
+  .caveats ul { margin: 6px 0 0; padding-left: 18px; }
+  .caveats li { margin-bottom: 3px; }
+  .meta { margin-top: 12px; font-family: var(--display); font-size: 10.5px; letter-spacing: 0.1em; color: var(--faint); text-transform: uppercase; }
+  details { margin-top: 10px; }
+  summary {
+    cursor: pointer; font-family: var(--display); font-size: 10.5px; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--faint);
+  }
+  .trace-item {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px;
+    color: var(--dim); margin-top: 6px; padding: 6px 9px; background: var(--panel-2);
+    border: 1px solid var(--line-soft);
+  }
+  #input-row {
+    border-top: 1px solid var(--line); background: var(--panel); padding: 16px 28px;
+    display: flex; gap: 10px; max-width: 800px; margin: 0 auto; width: 100%;
+  }
+  #question {
+    flex: 1; padding: 11px 14px; border: 1px solid var(--line); border-radius: 2px;
+    font-size: 14px; font-family: var(--body); outline: none; background: var(--ground); color: var(--ink);
+  }
+  #question::placeholder { color: var(--faint); }
+  #question:focus { border-color: var(--red); }
+  #send {
+    padding: 11px 20px; border: none; border-radius: 2px; background: var(--red);
+    color: var(--ground); font-family: var(--display); font-size: 12px; font-weight: 700;
+    letter-spacing: 0.14em; text-transform: uppercase; cursor: pointer;
+  }
+  #send:hover { filter: brightness(1.1); }
+  #send:disabled { opacity: .4; cursor: default; filter: none; }
+  .example-q {
+    font-family: var(--display); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--dim); background: var(--panel); border: 1px solid var(--line);
+    padding: 6px 11px; margin: 3px 6px 3px 0; display: inline-block; cursor: pointer; border-radius: 2px;
+  }
+  .example-q:hover { border-color: var(--red); color: var(--ink); }
+  .examples { padding: 14px 28px; max-width: 800px; margin: 0 auto; width: 100%; background: var(--ground); }
+  #chat::-webkit-scrollbar { width: 8px; }
+  #chat::-webkit-scrollbar-thumb { background: var(--line); }
+  #chat::-webkit-scrollbar-track { background: var(--ground); }
+</style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1><span class="mark">//</span> Statement Intelligence Agent</h1>
+      <p>Ask about the ingested bank/credit-card statements and expense sheets — every answer is source-cited and verified before it's shown.</p>
+    </div>
+  </header>
+  <div id="status-bar">Checking ledger status…</div>
+  <div class="examples" id="examples" hidden>
+    <button class="example-q" data-q="What did I spend on dining in Q2 2025?">Dining spend in Q2 2025</button>
+    <button class="example-q" data-q="Compare my grocery spending across months.">Compare grocery spending by month</button>
+    <button class="example-q" data-q="Are there any charges I should double-check or dispute?">Anything to dispute?</button>
+    <button class="example-q" data-q="Is there anything suspicious about the Cobalt statement?">Anything suspicious about Cobalt?</button>
+    <button class="example-q" data-q="What did I spend on dining last quarter?">Dining spend last quarter</button>
+  </div>
+  <div id="chat"></div>
+  <div id="input-row">
+    <input id="question" type="text" placeholder="Ask a question about your statements…" autocomplete="off">
+    <button id="send">Ask</button>
+  </div>
+
+<script>
+const chat = document.getElementById('chat');
+const input = document.getElementById('question');
+const sendBtn = document.getElementById('send');
+const statusBar = document.getElementById('status-bar');
+const examples = document.getElementById('examples');
+
+function el(tag, cls, html) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (html !== undefined) e.innerHTML = html;
+  return e;
+}
+
+function escapeHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+async function checkStatus() {
+  try {
+    const res = await fetch('/api/status');
+    const data = await res.json();
+    if (!data.ready) {
+      statusBar.textContent = data.reason;
+      statusBar.classList.add('error');
+      sendBtn.disabled = true;
+      return;
+    }
+    let msg = `Ledger ready — ${data.transaction_count} transactions across ${data.document_count} documents.`;
+    if (!data.has_api_key) {
+      msg += ' WARNING: ANTHROPIC_API_KEY is not set on the server — questions will fail.';
+      statusBar.classList.add('error');
+    }
+    statusBar.textContent = msg;
+    examples.hidden = false;
+  } catch (e) {
+    statusBar.textContent = 'Could not reach the server.';
+    statusBar.classList.add('error');
+  }
+}
+
+function addUserBubble(text) {
+  const row = el('div', 'row user');
+  row.appendChild(el('div', 'bubble-user', escapeHtml(text)));
+  chat.appendChild(row);
+  chat.scrollTop = chat.scrollHeight;
+}
+
+function addCard(node) {
+  const row = el('div', 'row');
+  row.appendChild(node);
+  chat.appendChild(row);
+  chat.scrollTop = chat.scrollHeight;
+  return node;
+}
+
+function addLoadingCard() {
+  const card = el('div', 'card', '<span style="color:var(--faint);font-family:var(--display);font-size:11px;letter-spacing:.14em;text-transform:uppercase">Thinking…</span>');
+  return addCard(card);
+}
+
+function renderAnswer(card, data) {
+  card.innerHTML = '';
+  const status = data.status || (data.error ? 'ERROR' : 'INSUFFICIENT_INFORMATION');
+  card.appendChild(el('span', 'badge ' + status, status.replace(/_/g, ' ')));
+
+  if (data.error) {
+    card.appendChild(el('div', 'answer-text', escapeHtml(data.error)));
+    return;
+  }
+
+  card.appendChild(el('div', 'answer-text', escapeHtml(data.answer_text || '')));
+
+  if (data.amounts && data.amounts.length) {
+    const wrap = el('div', 'amounts');
+    data.amounts.forEach(a => {
+      const label = a.label ? ` — ${escapeHtml(a.label)}` : '';
+      wrap.appendChild(el('span', 'amount-pill', `${escapeHtml(a.amount)} ${escapeHtml(a.currency)}${label}`));
+    });
+    card.appendChild(wrap);
+  }
+
+  if (data.caveats && data.caveats.length) {
+    const wrap = el('div', 'caveats');
+    wrap.appendChild(el('div', 'k', 'Caveats'));
+    const ul = el('ul');
+    data.caveats.forEach(c => ul.appendChild(el('li', null, escapeHtml(c))));
+    wrap.appendChild(ul);
+    card.appendChild(wrap);
+  }
+
+  const metaParts = [];
+  if (data.cited_count) metaParts.push(`${data.cited_count} txn(s) cited`);
+  if (data.trace) metaParts.push(`${data.trace.length} tool call(s)`);
+  if (metaParts.length) card.appendChild(el('div', 'meta', metaParts.join(' · ')));
+
+  if (data.trace && data.trace.length) {
+    const details = el('details');
+    details.appendChild(el('summary', null, 'Execution trace'));
+    data.trace.forEach((t, i) => {
+      details.appendChild(el('div', 'trace-item', `${i + 1}. ${escapeHtml(t.tool)}(${escapeHtml(JSON.stringify(t.input))})`));
+    });
+    card.appendChild(details);
+  }
+}
+
+async function ask(question) {
+  if (!question.trim()) return;
+  addUserBubble(question);
+  input.value = '';
+  sendBtn.disabled = true;
+  const card = addLoadingCard();
+
+  try {
+    const res = await fetch('/api/ask', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question }),
+    });
+    const data = await res.json();
+    renderAnswer(card, data);
+  } catch (e) {
+    renderAnswer(card, { error: 'Request failed: ' + e.message });
+  } finally {
+    sendBtn.disabled = false;
+    input.focus();
+  }
+}
+
+sendBtn.addEventListener('click', () => ask(input.value));
+input.addEventListener('keydown', (e) => { if (e.key === 'Enter') ask(input.value); });
+examples.addEventListener('click', (e) => {
+  const q = e.target.getAttribute('data-q');
+  if (q) ask(q);
+});
+
+checkStatus();
+</script>
+</body>
+</html>

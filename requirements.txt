@@ -1,0 +1,6 @@
+pdfplumber==0.11.10
+PyMuPDF==1.28.2
+anthropic==1.2.0
+python-dateutil==2.9.0.post0
+pytest==9.1.1
+Flask==3.1.3
