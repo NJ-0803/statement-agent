@@ -58,13 +58,24 @@ python -m statement_agent.cli ask --interactive
 verification status (`VERIFIED` / `VERIFIED_WITH_CAVEATS` / `INSUFFICIENT_INFORMATION`), the amounts
 it's standing behind, any caveats, and how many transactions it cited as sources.
 
+**3. Or use the web UI instead of the terminal** (same underlying agent, requires `ANTHROPIC_API_KEY`):
+
+```bash
+python -m statement_agent.cli serve
+```
+
+Opens on `http://127.0.0.1:5050` — a single-page dark-themed chat interface with example questions,
+a live status bar (ledger stats, whether the API key is set), and each answer's verification badge,
+amounts, caveats, and execution trace, same as the CLI. `--port` to use a different port. `serve` is a
+thin wrapper over the exact same `Store`/`run_agent()` the CLI uses — no separate logic to trust.
+
 ## Running the tests
 
 ```bash
 python -m pytest tests/ -v
 ```
 
-152 tests, all runnable offline with no API key — they cover normalization (currency/date parsing),
+165 tests, all runnable offline with no API key — they cover normalization (currency/date parsing),
 PDF/CSV extraction (including the injection-defense and duplicate-detection tests described below),
 resolution (categorization, duplicates, reconciliation, anomaly detection), the query/aggregation
 tools, and the answer verifier's grounding/provenance checks. See `DECISIONS.md` §11 for the three real
@@ -87,7 +98,9 @@ runs as part of `pytest tests/` via `tests/test_gold_eval.py`, one test per case
 
 ## What it can do
 
-- Parse PDF bank/credit-card statements with varied layouts and CSV expense/reimbursement sheets.
+- Parse PDF bank/credit-card statements with varied layouts, CSV and XLSX expense/reimbursement
+  sheets, and standalone statement images (a photographed or screenshotted page) via the same
+  vision-OCR path used as a PDF fallback.
 - Normalize dates across ISO, `DD/MM/YYYY`, `MM-DD-YYYY`, and textual formats, resolving ambiguous
   numeric dates using other dates in the same document as context.
 - Normalize currency across `₹`, `Rs.`, `INR`, `USD`, bare numbers, `CR`/`DR` suffixes, and
@@ -124,8 +137,8 @@ runs as part of `pytest tests/` via `tests/test_gold_eval.py`, one test per case
   a guessed category, which is correct-but-conservative (see `DECISIONS.md` §13 for what a soft-
   confidence version would add).
 - No linking between related transactions (e.g. a refund isn't matched back to its original purchase)
-  — none of the current sample data has real transfer/refund pairs to build and test this against.
-- No web UI — CLI only.
+  — none of the current sample data has real transfer/refund pairs to build and test this against
+  (see `NOT_IMPLEMENTED.md` for the full, categorized list of what's out of scope and why).
 
 The vision-OCR path and the live multi-turn agent loop have now been tested end-to-end against the
 real dataset with live API credits — see `DECISIONS.md` §12 for the full set of live results, all

@@ -57,6 +57,73 @@ class TestFullFolderIngestion:
             os.remove(path)
 
 
+class TestXlsxAndImageIngestion:
+    def test_xlsx_and_image_both_discovered_as_supported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            import shutil
+
+            shutil.copy(os.path.join(FIXTURES, "personal_expenses_sample.xlsx"), os.path.join(tmp, "expenses.xlsx"))
+            shutil.copy(os.path.join(FIXTURES, "sample_statement_image.png"), os.path.join(tmp, "statement.png"))
+
+            store, path = _fresh_store()
+            try:
+                reports = ingest_folder(tmp, store, attempt_vision=False)
+                assert len(reports) == 2
+                assert all(r.status != "skipped_unsupported" for r in reports)
+            finally:
+                store.close()
+                os.remove(path)
+
+    def test_xlsx_transactions_actually_ingested(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            import shutil
+
+            shutil.copy(os.path.join(FIXTURES, "personal_expenses_sample.xlsx"), os.path.join(tmp, "expenses.xlsx"))
+
+            store, path = _fresh_store()
+            try:
+                reports = ingest_folder(tmp, store, attempt_vision=False)
+                assert reports[0].status == "ingested"
+                assert reports[0].transaction_count == 4
+                assert len(store.all_transactions()) == 4
+            finally:
+                store.close()
+                os.remove(path)
+
+    def test_image_without_vision_ingests_with_zero_transactions_not_a_crash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            import shutil
+
+            shutil.copy(os.path.join(FIXTURES, "sample_statement_image.png"), os.path.join(tmp, "statement.png"))
+
+            store, path = _fresh_store()
+            try:
+                reports = ingest_folder(tmp, store, attempt_vision=False)
+                assert reports[0].status == "ingested"
+                assert reports[0].transaction_count == 0
+                assert any("vision was disabled" in w for w in reports[0].warnings)
+            finally:
+                store.close()
+                os.remove(path)
+
+    def test_xlsx_is_idempotent_on_reingestion(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            import shutil
+
+            shutil.copy(os.path.join(FIXTURES, "personal_expenses_sample.xlsx"), os.path.join(tmp, "expenses.xlsx"))
+
+            store, path = _fresh_store()
+            try:
+                ingest_folder(tmp, store, attempt_vision=False)
+                count_first = len(store.all_transactions())
+                reports = ingest_folder(tmp, store, attempt_vision=False)
+                assert reports[0].status == "skipped_duplicate"
+                assert len(store.all_transactions()) == count_first
+            finally:
+                store.close()
+                os.remove(path)
+
+
 class TestSingleBadFileDoesNotAbortFolder:
     def test_folder_with_one_malformed_csv_still_ingests_the_rest(self):
         with tempfile.TemporaryDirectory() as tmp:

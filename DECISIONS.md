@@ -296,7 +296,7 @@ correctly rejected as "possible fabrication."
 
 ## 11. Test harness — what it caught
 
-`tests/` currently has 152 tests across normalization, economic-type refinement, deterministic period
+`tests/` currently has 165 tests across normalization, economic-type refinement, deterministic period
 resolution, CSV/PDF extraction, resolution, the query tools, and the verifier — all runnable offline
 with `pytest`, no API key needed. Plus `eval/gold_qa.py`, a separate gold-answer harness with 7
 hand-computed expected numbers checked against the real dataset (§ below this one has the full writeup
@@ -440,3 +440,34 @@ retrieval-completeness verification in general.
 
 All three: `tests/test_tools.py::TestSortAndLimit`,
 `tests/test_tools.py::TestRetrievalCompletenessSignal`, live-tested end to end, 152/152 passing.
+
+---
+
+## 16. File-format coverage: XLSX and standalone images
+
+Flagged by a direct question: only `.pdf` and `.csv` were ever recognized — everything else (XLSX,
+images, anything) was safely skipped with a warning, never silently dropped, but also never actually
+ingested. Given the brief's own framing ("this folder could grow to many more documents"), that's a
+real coverage gap, and — unlike most of `NOT_IMPLEMENTED.md` — a cheap and low-risk one to close,
+since both additions reuse logic that's already built and tested rather than needing new unverified
+matching logic:
+
+- **XLSX** (`ingest/xlsx_parser.py`): refactored `csv_parser.py` to split out `parse_tabular_rows`
+  (the header-alias-matching and row→Transaction logic) from `parse_csv` (just the file-reading part),
+  so `parse_xlsx` reuses the exact same tested logic, just reading rows via `openpyxl` instead of
+  `csv.DictReader`. One real wrinkle: Excel returns native `datetime.date` objects for date cells,
+  which a naive `str()` would turn into `"2025-06-21 00:00:00"` — rejected by the ISO-date regex,
+  which requires nothing after the day. Cell values are converted deliberately (`_cell_to_str`), not
+  left to a generic `str()`. Verified against a real generated fixture with actual Excel-native date
+  cells (not string dates formatted to look like dates) — this was the part actually worth testing,
+  since a fixture using string dates wouldn't have exercised the real risk at all.
+- **Standalone images** (`ingest/image_parser.py`): refactored `pdf_vision.py` to split the actual
+  model call/response-parsing (`_vision_extract_from_image_bytes`) from how the image bytes are
+  obtained — `vision_extract_page` renders a PDF page first, `vision_extract_standalone_image` reads
+  an image file directly, both call the same shared function. Live-tested by rendering this dataset's
+  own scanned Axis statement page out to a standalone PNG and running it through the new path:
+  identical 6 transactions to running the same page through the PDF path, confirming the refactor
+  didn't change behavior, only added a second entry point to it.
+
+13 new tests (`tests/test_xlsx_parser.py`, `tests/test_image_parser.py`, plus new cases in
+`tests/test_pipeline.py`), all offline except the live end-to-end confirmations above. 165/165 passing.

@@ -10,20 +10,28 @@ finished thing.
 ## 1. The whole system in one picture
 
 ```
-                         ┌─────────────────────────┐
-  dataset_public/  ───▶  │   INGESTION PIPELINE     │
-  (PDF + CSV)            │   (ingest/pipeline.py)   │
-                         └────────────┬─────────────┘
-                                      │
-                    ┌─────────────────┼─────────────────┐
-                    ▼                 ▼                 ▼
-              csv_parser.py    pdf_native.py      pdf_vision.py
-              (CSV rows)      (pdfplumber,        (Claude vision,
-                               anchor-based)        only for pages
-                                    │                that fail a
-                                    │                quality check)
-                                    └────────┬────────┘
-                                             ▼
+                         ┌──────────────────────────────┐
+  dataset_public/  ───▶  │     INGESTION PIPELINE        │
+  (PDF, CSV, XLSX,       │     (ingest/pipeline.py)      │
+   or a standalone       └──────────────┬─────────────────┘
+   statement image)                     │
+                    ┌───────────┬───────┼───────┬───────────────┐
+                    ▼           ▼       ▼       ▼               ▼
+              csv_parser  xlsx_parser  pdf_native  image_parser  │
+              .py (CSV    .py (Excel   .py         .py (bare     │
+              rows)       rows, same   (pdfplumber, image file,  │
+                          alias        anchor-      no native    │
+                          matching     based)       text layer   │
+                          as CSV)          │         possible)   │
+                    └───────────┴──────────┼─────────┴───────────┘
+                                            ▼ (pages/images that fail
+                                            a native-quality check)
+                                      pdf_vision.py
+                                      (Claude vision — shared call/parse
+                                       logic for both a rendered PDF page
+                                       and a standalone image file)
+                                            │
+                                            ▼
                                    normalize.py
                                    (currency + date parsing,
                                     document-level ambiguity resolution)
@@ -105,15 +113,29 @@ scans every date in a document first, then only falls back to a locale default (
 dataset's own India/INR convention) when nothing in the document disambiguates it — and flags that
 fallback as an assumption, not a certainty, in the transaction's notes.
 
-### 2.3 Extraction (`ingest/csv_parser.py`, `pdf_native.py`, `pdf_vision.py`, `quality.py`)
+### 2.3 Extraction (`ingest/csv_parser.py`, `xlsx_parser.py`, `pdf_native.py`, `image_parser.py`,
+`pdf_vision.py`, `quality.py`)
 
-**What:** CSV rows are parsed via header-alias matching (`Txn Date` and `date` both map to the date
-column) so differently-shaped sheets don't need separate code paths. PDF rows are reconstructed from
-`pdfplumber` word *positions* (`(x0, top)` coordinates), not raw text-stream order — grouped by `top`
-or 2pt tolerance, sorted by `x0` within a row, then classified by **anchors**: a date pattern at the
-line start and an amount pattern at the line end. Anything matching neither anchor is metadata, never
-a transaction. Pages where this yields nothing usable (empty text layer, or text with zero recognized
-rows) get rasterized and sent to Claude's vision model as a fallback, tagged at lower confidence.
+**What:** CSV and XLSX rows are both parsed via header-alias matching (`Txn Date` and `date` both map
+to the date column) so differently-shaped sheets don't need separate code paths — `xlsx_parser.py`
+reads an Excel sheet into the same `(headers, rows)` shape a CSV produces and hands off to
+`csv_parser.parse_tabular_rows`, the one function underneath both formats. PDF rows are reconstructed
+from `pdfplumber` word *positions* (`(x0, top)` coordinates), not raw text-stream order — grouped by
+`top` or 2pt tolerance, sorted by `x0` within a row, then classified by **anchors**: a date pattern at
+the line start and an amount pattern at the line end. Anything matching neither anchor is metadata,
+never a transaction. Pages where this yields nothing usable (empty text layer, or text with zero
+recognized rows) get rasterized and sent to Claude's vision model as a fallback, tagged at lower
+confidence — and a standalone statement image (a photo or screenshot, not embedded in a PDF) skips
+straight to that same vision path via `image_parser.py`, since there's no native text layer to try
+first for a bare image at all.
+
+**Why XLSX reuses the CSV parser instead of a separate implementation:** structurally it's the same
+problem — tabular rows, a header row with varying column names — so `xlsx_parser.py`'s only real job
+is getting values out of `openpyxl` correctly, not re-deriving header-matching logic. One genuine
+wrinkle CSV never has: Excel stores dates as native `datetime.date` objects, not text — converting one
+with a naive `str()` produces `"2025-06-21 00:00:00"`, which the ISO-date regex in `normalize.py`
+rejects (it requires nothing after the day). Cell values are converted deliberately, not left to a
+generic `str()`.
 
 **Why position-based extraction instead of naive text order:** discovered mid-build that a plain
 `pypdf.extract_text()` read of one statement produced what looked like two scrambled, interleaved
@@ -133,6 +155,15 @@ genuinely failed (no text, or text with zero parsed rows). Every vision-extracte
 still run through the *same* normalize/plausibility/reconciliation pipeline as natively-extracted
 rows, at a lower `extraction_confidence` (0.75 vs 1.0) — nothing from a scanned page is ever treated as
 more certain than what it is.
+
+**Why the vision call/parse logic is one shared function, not duplicated for PDFs vs. images:**
+`pdf_vision._vision_extract_from_image_bytes` is the actual model call and response-parsing code;
+`vision_extract_page` (renders a PDF page first) and `vision_extract_standalone_image` (reads an image
+file directly) are both thin callers of it. A PDF page and a bare photo differ only in how the image
+bytes were obtained — sending them to the model and turning the response into transactions is
+identical, so it's one tested code path instead of two that could quietly drift apart. Live-tested by
+rendering one of this dataset's own scanned pages out to a standalone PNG and running it through the
+image path: identical output to running the same page through the PDF path.
 
 ### 2.4 Resolution (`resolve.py`)
 

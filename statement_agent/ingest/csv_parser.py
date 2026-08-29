@@ -48,14 +48,6 @@ def file_hash(path: str) -> str:
 
 def parse_csv(path: str, *, default_currency: str = "INR") -> CsvParseResult:
     fhash = file_hash(path)
-    document = Document(
-        document_id=str(uuid.uuid4()),
-        file_path=path,
-        file_hash=fhash,
-        doc_type="expense_sheet",
-        currency_declared=None,
-        reconciliation_status="NO_TOTALS",
-    )
 
     try:
         with open(path, newline="", encoding="utf-8-sig") as f:
@@ -67,6 +59,35 @@ def parse_csv(path: str, *, default_currency: str = "INR") -> CsvParseResult:
             reader = csv.DictReader(f)
             headers = reader.fieldnames or []
             rows = list(reader)
+
+    return parse_tabular_rows(
+        headers, rows, path=path, fhash=fhash, default_currency=default_currency,
+        extraction_method=ExtractionMethod.CSV_ROW,
+    )
+
+
+def parse_tabular_rows(
+    headers: list[str],
+    rows: list[dict],
+    *,
+    path: str,
+    fhash: str,
+    default_currency: str = "INR",
+    extraction_method: ExtractionMethod = ExtractionMethod.CSV_ROW,
+) -> CsvParseResult:
+    """The shared row->Transaction logic behind both parse_csv (CSV rows) and
+    xlsx_parser.parse_xlsx (Excel rows) — a tabular expense sheet is a tabular
+    expense sheet regardless of container format; only how `headers`/`rows` were
+    read from disk differs between the two callers.
+    """
+    document = Document(
+        document_id=str(uuid.uuid4()),
+        file_path=path,
+        file_hash=fhash,
+        doc_type="expense_sheet",
+        currency_declared=None,
+        reconciliation_status="NO_TOTALS",
+    )
 
     if not headers:
         document.parse_warnings.append("no header row detected; file rejected")
@@ -139,7 +160,7 @@ def parse_csv(path: str, *, default_currency: str = "INR") -> CsvParseResult:
                 file_hash=fhash,
                 row=i,
                 raw_text=str(row),
-                extraction_method=ExtractionMethod.CSV_ROW,
+                extraction_method=extraction_method,
                 extraction_confidence=1.0,
             ),
         )

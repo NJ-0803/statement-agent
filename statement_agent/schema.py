@@ -39,6 +39,7 @@ class ExtractionMethod(str, Enum):
     NATIVE_TABLE = "NATIVE_TABLE"
     VISION_OCR = "VISION_OCR"
     CSV_ROW = "CSV_ROW"
+    XLSX_ROW = "XLSX_ROW"
 
 
 @dataclass

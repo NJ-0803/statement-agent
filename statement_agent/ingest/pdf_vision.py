@@ -90,12 +90,26 @@ def render_page_png(path: str, page_index: int, dpi: int = 200) -> bytes:
         return pix.tobytes("png")
 
 
-def vision_extract_page(path: str, page_index: int, document: Document, *, client=None) -> VisionPageResult:
+def _vision_extract_from_image_bytes(
+    image_bytes: bytes,
+    media_type: str,
+    *,
+    source_path: str,
+    source_page: int | None,
+    label: str,
+    document: Document,
+    client=None,
+) -> VisionPageResult:
+    """Shared core: send one image (a rendered PDF page, or a standalone photo/
+    screenshot) to Claude vision and parse the structured result. `vision_extract_page`
+    and `vision_extract_standalone_image` are both thin callers of this — a PDF page
+    and a bare image file differ only in how the bytes were obtained, not in how
+    they're sent to the model or how the response is turned into transactions.
+    """
     import anthropic
 
     client = client or anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-    png_bytes = render_page_png(path, page_index)
-    b64 = base64.standard_b64encode(png_bytes).decode("ascii")
+    b64 = base64.standard_b64encode(image_bytes).decode("ascii")
 
     response = client.messages.create(
         model=VISION_MODEL,
@@ -107,8 +121,8 @@ def vision_extract_page(path: str, page_index: int, document: Document, *, clien
             {
                 "role": "user",
                 "content": [
-                    {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": b64}},
-                    {"type": "text", "text": f"Transcribe every transaction row on this statement page (page {page_index + 1})."},
+                    {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": b64}},
+                    {"type": "text", "text": f"Transcribe every transaction row on this statement {label}."},
                 ],
             }
         ],
@@ -117,7 +131,7 @@ def vision_extract_page(path: str, page_index: int, document: Document, *, clien
     tool_use = next((b for b in response.content if b.type == "tool_use"), None)
     result = VisionPageResult()
     if tool_use is None:
-        result.warnings.append(f"vision model returned no tool call for page {page_index + 1}")
+        result.warnings.append(f"vision model returned no tool call for {label}")
         return result
 
     payload = tool_use.input
@@ -126,7 +140,7 @@ def vision_extract_page(path: str, page_index: int, document: Document, *, clien
     result.currency_declared = payload.get("currency_declared")
     page_notes = payload.get("page_notes", "")
     if page_notes:
-        result.warnings.append(f"vision page_notes (page {page_index + 1}): {page_notes}")
+        result.warnings.append(f"vision page_notes ({label}): {page_notes}")
 
     date_resolver = DocumentDateResolver()
     for row in payload.get("transactions", []):
@@ -140,7 +154,7 @@ def vision_extract_page(path: str, page_index: int, document: Document, *, clien
         parsed_amount = normalize_amount(raw_amount, default_currency=document.currency_declared or result.currency_declared or "INR")
 
         if parsed_date.value is None or parsed_amount is None:
-            result.warnings.append(f"vision row failed normalization on page {page_index + 1}: {row!r}")
+            result.warnings.append(f"vision row failed normalization on {label}: {row!r}")
             continue
 
         plausible = is_date_plausible(
@@ -167,9 +181,9 @@ def vision_extract_page(path: str, page_index: int, document: Document, *, clien
                 else (EconomicType.REFUND if direction == Direction.CREDIT else EconomicType.PURCHASE)
             ),
             source=SourceRef(
-                file_path=path,
+                file_path=source_path,
                 file_hash=document.file_hash,
-                page=page_index + 1,
+                page=source_page,
                 raw_text=json.dumps(row),
                 extraction_method=ExtractionMethod.VISION_OCR,
                 extraction_confidence=VISION_EXTRACTION_CONFIDENCE,
@@ -181,3 +195,36 @@ def vision_extract_page(path: str, page_index: int, document: Document, *, clien
         result.transactions.append(txn)
 
     return result
+
+
+def vision_extract_page(path: str, page_index: int, document: Document, *, client=None) -> VisionPageResult:
+    png_bytes = render_page_png(path, page_index)
+    return _vision_extract_from_image_bytes(
+        png_bytes, "image/png",
+        source_path=path, source_page=page_index + 1, label=f"page (page {page_index + 1})",
+        document=document, client=client,
+    )
+
+
+_IMAGE_MEDIA_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png"}
+
+
+def vision_extract_standalone_image(path: str, document: Document, *, client=None) -> VisionPageResult:
+    """For a bare photographed/screenshotted statement (not a PDF) — there's no
+    native text layer to try first, so this goes straight to vision. Reuses the
+    exact same call/parse logic as the PDF-page fallback; only how the image
+    bytes are obtained differs.
+    """
+    import os as _os
+
+    ext = _os.path.splitext(path)[1].lower()
+    media_type = _IMAGE_MEDIA_TYPES.get(ext)
+    if media_type is None:
+        raise ValueError(f"unsupported image type for vision extraction: {ext}")
+    with open(path, "rb") as f:
+        image_bytes = f.read()
+    return _vision_extract_from_image_bytes(
+        image_bytes, media_type,
+        source_path=path, source_page=None, label="image",
+        document=document, client=client,
+    )
