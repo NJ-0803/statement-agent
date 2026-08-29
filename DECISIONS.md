@@ -416,14 +416,34 @@ readings, and even correctly noted that the single-largest-transaction (₹80,00
 is uncategorized and therefore excluded from the category-total reading — EC-22 and EC-26 reinforcing
 each other in one real answer.
 
-**Update — this decision was independently re-raised.** An external capability checklist, reviewed
-after this section was written, separately asked for "if confidence is low, the agent should ask the
-user for more details instead of guessing" — the same idea considered and declined above, arrived at
-from a different direction. Two independent sources naming the same idea is a real signal the
-"present all interpretations, never ask" call may be worth revisiting, not just noise to dismiss. The
-architectural reasoning above still stands as of this writing (self-contained answers fit the brief's
-own "questions you haven't seen" framing better than a blocking follow-up), but this is flagged as a
-live, not fully settled, decision rather than a closed one.
+**Update — this decision was independently re-raised, then resolved with a middle ground.** An
+external capability checklist, reviewed after this section was first written, separately asked for
+"if confidence is low, the agent should ask the user for more details instead of guessing" — the same
+idea considered and declined above, arrived at from a different direction. Two independent sources
+naming the same idea was a real signal worth acting on, not dismissing.
+
+The actual resolution, prompted directly: real blocking clarification was never necessary to get the
+better behavior — a single self-contained answer can both *answer directly* and *invite a follow-up*
+without waiting for one. Split into two distinct rules by how ambiguous the question's own wording is:
+
+- **2a (a single clear reading exists — e.g. "highest TRANSACTION")**: answer that one interpretation
+  directly, with reasoning (which transaction, why it's the answer), and unconditionally close with
+  exactly one natural follow-up question offering the next most useful cut of the same data (a single
+  transaction → offer a category/merchant breakdown, and so on). Never compute-and-dump alternate
+  readings nobody asked for.
+- **2b (the wording is genuinely ambiguous — e.g. "biggest EXPENSE")**: compute and present the
+  multiple materially-different readings together, as originally designed for EC-22, since there's no
+  single most-likely one to lead with.
+
+Live-tested both: *"What is the highest transaction in July 2025?"* → direct answer (₹80,000,
+GRANDEUR JEWELLERS PVT, with the outlier-flag reasoning) closing with *"Want me to also break down
+your July 2025 spending by category or merchant?"* *"What's my biggest expense in July 2025?"* →
+richer synthesis combining the single-transaction, merchant, and category readings, correctly
+reasoning that the top transaction is *also* the top merchant here (a one-off purchase), still closing
+with one follow-up offering the category breakdown. Both stayed complete, self-contained answers —
+this fits the brief's "questions you haven't seen" framing exactly as well as the original decision
+did, while now also reading naturally conversational for a live user. Consistent across repeated runs
+on different months (June and July both tested). This is now settled, not open.
 
 **EC-23 ("did I spend more this month?" ambiguity).** No stated comparison target — previous month?
 running average? same month last year? `resolve_period` already supported `last_month`, so this was a
