@@ -2,8 +2,15 @@ import os
 from decimal import Decimal
 
 from statement_agent.ingest.pdf_native import parse_pdf_native
-from statement_agent.resolve import categorize, detect_anomalies, detect_cross_document_duplicates, detect_duplicates, resolve_all
-from statement_agent.schema import Document
+from statement_agent.resolve import (
+    assign_extraction_sequence,
+    categorize,
+    detect_anomalies,
+    detect_cross_document_duplicates,
+    detect_duplicates,
+    resolve_all,
+)
+from statement_agent.schema import Direction, Document, EconomicType, Transaction
 
 STATEMENTS = os.path.join(os.path.dirname(os.path.dirname(__file__)), "dataset_public", "statements")
 DATASET = os.path.join(os.path.dirname(os.path.dirname(__file__)), "dataset_public")
@@ -23,6 +30,58 @@ class TestCategorization:
         result = categorize("RAJ ENTERPRISES XYZ 9284")
         assert result.category is None
         assert result.confidence == 0.0
+
+
+class TestExtractionSequence:
+    """extraction_sequence exists specifically because a live question ("is this
+    statement sorted by date?") got a false-positive answer from sorting by date and
+    then checking if the result was sorted by date — which proves nothing about the
+    source document's actual row order. This must be independent of transaction_date."""
+
+    def test_sequence_follows_list_order_not_date_order(self):
+        # deliberately out-of-date-order input: assign_extraction_sequence must number
+        # them by LIST position, not re-sort by date first
+        from datetime import date
+
+        txns = [
+            Transaction(
+                transaction_id=f"t{i}", document_id="doc1", transaction_date=d,
+                date_raw="", description_raw="M", merchant_raw="M",
+                amount=Decimal("10"), currency="INR",
+                direction=Direction.DEBIT, economic_type=EconomicType.PURCHASE,
+            )
+            for i, d in enumerate([date(2025, 7, 20), date(2025, 7, 1), date(2025, 7, 15)])
+        ]
+        assign_extraction_sequence(txns)
+        assert [t.extraction_sequence for t in txns] == [0, 1, 2]
+        # confirms the input itself was genuinely NOT date-ordered, so this is a real check
+        assert [t.transaction_date for t in txns] != sorted(t.transaction_date for t in txns)
+
+    def test_real_meridian_july_statement_is_not_actually_sorted_by_date(self):
+        # This is the exact real-world case that exposed the bug: a live question asked
+        # "is the July Meridian statement sorted by date?" and the agent answered "yes"
+        # after calling search_transactions(sort_by="date_asc") and observing the
+        # (trivially, circularly) sorted result. The real answer, checked here against
+        # the document's actual extraction order, is NO — UBER INDIA (2025-07-09)
+        # appears at extraction_sequence 9, after several later-dated rows (07-13
+        # through 07-22 all come first) — it's the last-processed row in the source PDF
+        # despite having the earliest date. Matches the external eval bank's own
+        # expected answer for this question ("a July 9 row appears after later July
+        # rows"), independently confirmed here from the real document, not assumed.
+        result = parse_pdf_native(os.path.join(STATEMENTS, "meridian_credit_card_jul2025.pdf"))
+        resolve_all(result.document, result.transactions)
+
+        assert all(t.extraction_sequence is not None for t in result.transactions)
+        by_sequence = sorted(result.transactions, key=lambda t: t.extraction_sequence)
+        dates_in_extraction_order = [t.transaction_date for t in by_sequence]
+
+        assert dates_in_extraction_order != sorted(dates_in_extraction_order)
+        uber = next(t for t in result.transactions if t.merchant_raw == "UBER INDIA")
+        later_dated = [t for t in result.transactions if t.transaction_date > uber.transaction_date]
+        assert any(t.extraction_sequence < uber.extraction_sequence for t in later_dated), (
+            "expected at least one later-dated row to appear BEFORE the July 9 Uber row "
+            "in the document's own extraction order"
+        )
 
 
 class TestDuplicateDetection:

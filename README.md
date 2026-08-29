@@ -75,7 +75,7 @@ thin wrapper over the exact same `Store`/`run_agent()` the CLI uses — no separ
 python -m pytest tests/ -v
 ```
 
-208 tests, all runnable offline with no API key — they cover normalization (currency/date parsing),
+211 tests, all runnable offline with no API key — they cover normalization (currency/date parsing),
 PDF/CSV extraction (including the injection-defense and duplicate-detection tests described below),
 resolution (categorization, duplicates, reconciliation, anomaly detection), the query/aggregation
 tools, and the answer verifier's grounding/provenance checks. See `DECISIONS.md` §11 for the three real
@@ -107,6 +107,10 @@ runs as part of `pytest tests/` via `tests/test_gold_eval.py`, one test per case
   disclosing when a locale-default guess was needed rather than silently picking one.
 - Normalize merchant names for grouping and duplicate detection (stripping noise like a trailing "PVT
   LTD"), while always citing the original, unmodified merchant text from the source document.
+- Track each transaction's real position in its source document's own row order, separate from its date —
+  so a question about the document's own ordering ("is this statement sorted by date?") can be answered
+  from the document's actual row sequence, not by re-sorting the results and checking the sort (which
+  would trivially always look sorted regardless of the truth).
 - Normalize currency across `₹`, `Rs.`, `INR`, `USD`, bare numbers, `CR`/`DR` suffixes, and
   parenthesized negatives — using exact `Decimal` arithmetic throughout, never floats.
 - Fall back to vision-model OCR for pages with no extractable text (e.g. scanned statements), while

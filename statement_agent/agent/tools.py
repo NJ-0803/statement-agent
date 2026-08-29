@@ -50,6 +50,9 @@ class TxnView:
     notes: str
     is_duplicate_flag: bool
     date_plausible: bool
+    extraction_sequence: int | None  # 0-based position in the ORIGINAL source document's own row
+    # order (page-ascending/top-to-bottom for PDFs, row-ascending for CSV/XLSX) — NOT the same as
+    # date order. Use sort_by="extraction_order" to retrieve rows in this order.
 
 
 def _view(t: Transaction) -> TxnView:
@@ -71,6 +74,7 @@ def _view(t: Transaction) -> TxnView:
         notes=t.notes,
         is_duplicate_flag=t.duplicate_of is not None,
         date_plausible=t.date_plausible,
+        extraction_sequence=t.extraction_sequence,
     )
 
 
@@ -113,13 +117,21 @@ def search_transactions(
     merchant_contains: str | None = None,
     currency: str | None = None,
     include_flagged: bool = True,
-    sort_by: str | None = None,  # "amount_desc" | "amount_asc" | "date_desc" | "date_asc"
+    sort_by: str | None = None,  # "amount_desc" | "amount_asc" | "date_desc" | "date_asc" | "extraction_order"
     limit: int | None = None,
 ) -> SearchResult:
     """`sort_by`/`limit` exist so a question like 'what's my single biggest expense'
     can be answered by sorting deterministically in code (e.g. sort_by="amount_desc",
     limit=1) — never by the model eyeballing a list and picking the largest itself,
     same 'no mental math' principle as every aggregate number.
+
+    `sort_by="extraction_order"` is different from all the others: it returns rows in
+    the ORIGINAL source document's own row order (extraction_sequence), not sorted by
+    any transaction field. Use this — never date_asc — to answer a question about the
+    document's own row/date ordering (e.g. "is this statement sorted by date?"):
+    re-sorting by date and then checking if the result is sorted by date is circular
+    and proves nothing about the source; compare extraction_order against the dates
+    it returns instead.
 
     Returns a SearchResult, not a bare list — `total_matched` and `truncated` let
     the caller (and the verifier/prompt policy) know when a result is a capped
@@ -151,6 +163,8 @@ def search_transactions(
         matched.sort(key=lambda t: t.transaction_date or date.min, reverse=True)
     elif sort_by == "date_asc":
         matched.sort(key=lambda t: t.transaction_date or date.min)
+    elif sort_by == "extraction_order":
+        matched.sort(key=lambda t: t.extraction_sequence if t.extraction_sequence is not None else -1)
 
     total_matched = len(matched)
     effective_limit = limit if limit is not None else DEFAULT_SEARCH_LIMIT

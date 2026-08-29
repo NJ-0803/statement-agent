@@ -94,6 +94,14 @@ def ingest_file(path: str, store: Store, *, attempt_vision: bool = True) -> Inge
             for pq in vision_pages:
                 warnings.append(f"page {pq.page_index + 1} needs vision OCR ({pq.reason}) but vision was disabled for this run")
 
+        # Native rows were appended first, then vision-extracted rows for whichever pages needed
+        # fallback — so if page 1 needed vision and page 2 didn't, `transactions` would currently
+        # have page 2's (native) rows before page 1's (vision) rows, even though page 1 comes first
+        # in the actual document. A stable sort by page fixes that before extraction_sequence is
+        # assigned in resolve_all — stable, so each page's own internal row order (already correct)
+        # is preserved, only the page-to-page interleaving is corrected.
+        transactions.sort(key=lambda t: t.source.page if t.source and t.source.page is not None else 0)
+
         anomalies = resolve_all(doc, transactions)
         _attach_anomaly_notes(anomalies)
         if anomalies:

@@ -125,6 +125,22 @@ def categorize(merchant: str) -> CategoryResult:
     return CategoryResult(None, 0.0)
 
 
+def assign_extraction_sequence(transactions: list[Transaction]) -> None:
+    """Sets extraction_sequence to each transaction's 0-based position in the list AS
+    PASSED IN — which by construction (see pipeline.ingest_file) already reflects the
+    original source document's own row order: page-ascending/top-to-bottom for PDFs
+    (native and vision-extracted pages combined and sorted by page before this runs),
+    row-ascending for CSV/XLSX. Must run before anything reorders `transactions` (no
+    step currently does, but this is why it's set explicitly here rather than assumed
+    from list position later) — found necessary after a live question ("is this
+    statement sorted by date?") got a false-positive answer from re-sorting by date
+    and then checking if the result was sorted by date, which proves nothing about
+    the source document's actual row order. See DECISIONS.md for the incident.
+    """
+    for i, t in enumerate(transactions):
+        t.extraction_sequence = i
+
+
 def assign_merchant_normalization(transactions: list[Transaction]) -> None:
     """Sets merchant_normalized on every transaction (see normalize.normalize_merchant
     for exactly what is and isn't stripped). Runs before duplicate detection so
@@ -335,6 +351,7 @@ def detect_anomalies(transactions: list[Transaction], *, z_threshold: float = 3.
 
 def resolve_all(doc: Document, transactions: list[Transaction]) -> list[AnomalyFlag]:
     """Runs the full deterministic resolution pass for one document's transactions."""
+    assign_extraction_sequence(transactions)
     assign_merchant_normalization(transactions)
     refine_all_economic_types(transactions)
     detect_duplicates(transactions)

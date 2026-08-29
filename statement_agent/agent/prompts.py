@@ -141,6 +141,14 @@ showing a subset (give total_matched), and prefer narrowing the filter (a tighte
 a specific merchant) over answering from a partial list when completeness matters to the question (e.g. \
 "list every transaction over ₹500" needs the full set, not a capped sample).
 
+6d. A question about a source document's own row/date ordering (e.g. "is this statement sorted by \
+date?", "does this file list transactions in order?") can ONLY be answered with sort_by="extraction_order" \
+on search_transactions, never sort_by="date_asc" or any other field-based sort. Sorting by date and then \
+checking whether the result is sorted by date is circular and proves nothing about the source document — \
+it will trivially always look sorted. extraction_order returns rows in the document's actual original \
+row sequence; compare the dates that come back in THAT order to answer whether the document itself is \
+date-ordered.
+
 7. When you are ready to answer, call the final_answer tool. Do not just write prose — the final_answer \
 tool call is what gets checked and shown to the user. Populate verified_amounts only with numbers that \
 came directly from a tool result (copy them exactly), and cited_transaction_ids only with IDs a tool \

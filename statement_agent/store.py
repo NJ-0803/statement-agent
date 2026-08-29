@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS transactions (
     transaction_date TEXT,
     date_raw TEXT,
     date_plausible INTEGER NOT NULL,
+    extraction_sequence INTEGER,
     description_raw TEXT,
     merchant_raw TEXT,
     merchant_normalized TEXT,
@@ -127,7 +128,7 @@ class Store:
             rows.append((
                 t.transaction_id, t.document_id,
                 t.transaction_date.isoformat() if t.transaction_date else None,
-                t.date_raw, int(t.date_plausible),
+                t.date_raw, int(t.date_plausible), t.extraction_sequence,
                 t.description_raw, t.merchant_raw, t.merchant_normalized,
                 _dec(t.amount), t.currency, t.amount_raw, t.direction.value,
                 t.economic_type.value, t.economic_type_confidence,
@@ -140,12 +141,12 @@ class Store:
         self.conn.executemany(
             """
             INSERT OR REPLACE INTO transactions (
-                transaction_id, document_id, transaction_date, date_raw, date_plausible,
+                transaction_id, document_id, transaction_date, date_raw, date_plausible, extraction_sequence,
                 description_raw, merchant_raw, merchant_normalized, amount, currency, amount_raw, direction,
                 economic_type, economic_type_confidence, category, category_confidence,
                 source_file_path, source_page, source_row, source_raw_text, extraction_method,
                 extraction_confidence, duplicate_of, duplicate_reason, notes
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             rows,
         )
@@ -182,6 +183,7 @@ def _row_to_transaction(r: sqlite3.Row) -> Transaction:
         transaction_date=date.fromisoformat(r["transaction_date"]) if r["transaction_date"] else None,
         date_raw=r["date_raw"] or "",
         date_plausible=bool(r["date_plausible"]),
+        extraction_sequence=r["extraction_sequence"],
         description_raw=r["description_raw"] or "",
         merchant_raw=r["merchant_raw"],
         merchant_normalized=r["merchant_normalized"],

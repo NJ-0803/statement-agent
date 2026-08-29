@@ -83,6 +83,12 @@ class Transaction:
     date_raw: str
     date_plausible: bool = True  # False if the parsed date falls outside a sane bound
 
+    extraction_sequence: int | None = None  # this transaction's 0-based position in the ORIGINAL source
+    # document's own row order (page-ascending, top-to-bottom for PDFs; row-ascending for CSV/XLSX) — set
+    # once at resolution time from extraction order, never from transaction_date. This is what makes "is
+    # this statement sorted by date" an answerable question: comparing extraction_sequence order against
+    # transaction_date order is meaningful; re-sorting by date and checking if it's sorted by date is not.
+
     description_raw: str = ""
     merchant_raw: str | None = None
     merchant_normalized: str | None = None  # canonicalized for grouping/dedup; merchant_raw stays the citation value

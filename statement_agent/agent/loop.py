@@ -64,7 +64,12 @@ TOOL_SCHEMAS = [
             "actually matched the filters), and `truncated` (true if `results` is a partial subset of "
             "`total_matched`). If `truncated` is true, the rows you got are NOT the complete match set — "
             "say so explicitly rather than presenting them as if they were everything, and narrow the "
-            "filters (tighter date range, a category, etc.) if the user needs the full set."
+            "filters (tighter date range, a category, etc.) if the user needs the full set. "
+            "sort_by='extraction_order' returns rows in the ORIGINAL source document's own row order "
+            "(each row's extraction_sequence), not sorted by any transaction field — use this, never "
+            "date_asc, to answer a question about the document's own row/date ordering (e.g. 'is this "
+            "statement sorted by date?'). Sorting by date and then checking if the result is sorted by "
+            "date is circular and proves nothing about the source document."
         ),
         "input_schema": {
             "type": "object",
@@ -76,7 +81,7 @@ TOOL_SCHEMAS = [
                 "merchant_contains": {"type": "string"},
                 "currency": {"type": "string"},
                 "include_flagged": {"type": "boolean", "description": "include duplicate-flagged/implausible-date rows (default true)"},
-                "sort_by": {"type": "string", "enum": ["amount_desc", "amount_asc", "date_desc", "date_asc"]},
+                "sort_by": {"type": "string", "enum": ["amount_desc", "amount_asc", "date_desc", "date_asc", "extraction_order"]},
                 "limit": {"type": "integer", "description": "max rows to return, applied after sorting"},
             },
         },

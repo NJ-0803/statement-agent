@@ -323,6 +323,24 @@ class TestSortAndLimit:
         assert result.truncated is False
         assert result.limit_applied is None
 
+    def test_extraction_order_reveals_the_real_meridian_july_statement_is_not_date_sorted(self):
+        # the real case this sort_by option exists for: a live question ("is this
+        # statement sorted by date?") got a false-positive "yes" from sorting by date
+        # and observing the (trivially, circularly) sorted result. Checked honestly
+        # here via extraction_order, scoped to July the same way the agent does —
+        # see DECISIONS.md for the incident this fixes.
+        ledger = _ledger()
+        by_extraction = search_transactions(
+            ledger, date_from=date(2025, 7, 1), date_to=date(2025, 7, 31), sort_by="extraction_order"
+        ).results
+        by_date = search_transactions(
+            ledger, date_from=date(2025, 7, 1), date_to=date(2025, 7, 31), sort_by="date_asc"
+        ).results
+
+        # date_asc is trivially always sorted by date — that's the whole bug. The real
+        # question is whether extraction_order matches it, and here it must not.
+        assert [t.date for t in by_extraction] != [t.date for t in by_date]
+
 
 class TestSearchTransactionsTruncation:
     """New behavior for fix #1: search_transactions must never silently drop rows —
