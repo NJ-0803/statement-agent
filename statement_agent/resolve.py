@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal
 
+from .normalize import normalize_merchant
 from .schema import Direction, Document, EconomicType, Transaction
 
 # ---------------------------------------------------------------------------
@@ -124,6 +125,17 @@ def categorize(merchant: str) -> CategoryResult:
     return CategoryResult(None, 0.0)
 
 
+def assign_merchant_normalization(transactions: list[Transaction]) -> None:
+    """Sets merchant_normalized on every transaction (see normalize.normalize_merchant
+    for exactly what is and isn't stripped). Runs before duplicate detection so
+    detect_cross_document_duplicates groups on the canonical name, not the raw one —
+    the case this most directly helps is the same real merchant recorded with an
+    inconsistent trailing corporate suffix across two different source documents.
+    """
+    for t in transactions:
+        t.merchant_normalized = normalize_merchant(t.merchant_raw)
+
+
 def assign_categories(transactions: list[Transaction]) -> None:
     for t in transactions:
         if t.economic_type != EconomicType.PURCHASE:
@@ -157,7 +169,9 @@ def detect_duplicates(transactions: list[Transaction], *, date_tolerance_days: i
                     continue
                 if a.amount != b.amount or a.currency != b.currency:
                     continue
-                if (a.merchant_raw or "").strip().lower() != (b.merchant_raw or "").strip().lower():
+                a_merchant = a.merchant_normalized or (a.merchant_raw or "").strip().upper()
+                b_merchant = b.merchant_normalized or (b.merchant_raw or "").strip().upper()
+                if a_merchant != b_merchant:
                     continue
                 delta = abs((a.transaction_date - b.transaction_date).days)
                 if delta <= date_tolerance_days:
@@ -202,7 +216,10 @@ def detect_cross_document_duplicates(transactions: list[Transaction], *, date_to
 
     groups: dict[tuple[Decimal, str, str], list[Transaction]] = {}
     for t in candidates:
-        key = (t.amount, t.currency, (t.merchant_raw or "").strip().lower())
+        # normalized, not raw: the same merchant recorded with an inconsistent
+        # trailing corporate suffix across two different documents (e.g. "X PVT"
+        # on one statement, "X" on another) must still group together here.
+        key = (t.amount, t.currency, t.merchant_normalized or (t.merchant_raw or "").strip().upper())
         groups.setdefault(key, []).append(t)
 
     newly_flagged: list[Transaction] = []
@@ -318,6 +335,7 @@ def detect_anomalies(transactions: list[Transaction], *, z_threshold: float = 3.
 
 def resolve_all(doc: Document, transactions: list[Transaction]) -> list[AnomalyFlag]:
     """Runs the full deterministic resolution pass for one document's transactions."""
+    assign_merchant_normalization(transactions)
     refine_all_economic_types(transactions)
     detect_duplicates(transactions)
     assign_categories(transactions)

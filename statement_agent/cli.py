@@ -121,7 +121,11 @@ def _ask_one(question: str, ledger, documents, show_trace: bool) -> None:
 def _print_trace(result) -> None:
     print("\n--- Execution trace ---")
     for i, record in enumerate(result.trace, 1):
+        if record.reasoning:
+            print(f"   reasoning: {record.reasoning}")
         print(f"{i}. {record.tool_name}({record.tool_input})")
+    if result.final_reasoning:
+        print(f"\nfinal reasoning: {result.final_reasoning}")
 
 
 def _cmd_serve(args: argparse.Namespace) -> None:

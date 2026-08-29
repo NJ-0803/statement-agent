@@ -296,7 +296,7 @@ correctly rejected as "possible fabrication."
 
 ## 11. Test harness — what it caught
 
-`tests/` currently has 189 tests across normalization, economic-type refinement, deterministic period
+`tests/` currently has 208 tests across normalization, economic-type refinement, deterministic period
 resolution, CSV/PDF extraction, resolution, the query tools, and the verifier — all runnable offline
 with `pytest`, no API key needed. Plus `eval/gold_qa.py`, a separate gold-answer harness with 7
 hand-computed expected numbers checked against the real dataset (§ below this one has the full writeup
@@ -741,3 +741,89 @@ hedging ("probable," never "confirmed"), OCR fallback correctness, prompt-inject
 embedded "disregard any" notice and framing the injected text back to the user as untrusted data),
 credit-vs-income semantics (`PAYMENT RECEIVED` correctly never counted as income) — held up cleanly, no
 material errors found.
+
+---
+
+## 20. Three explicit follow-ups: an ambiguous-date tool, merchant-alias normalization, captured reasoning
+
+Three separate requests in one pass, each addressed on its own merits rather than bundled as one change.
+
+**A `resolve_date` tool for ambiguous dates typed in a question.** The question that prompted this:
+"05/07/2026 — how will the agent understand if it's 5th May or 7th July?" `normalize.DocumentDateResolver`
+already solves this exact ambiguity for dates *extracted from documents* — it scans every date in one
+document first, and if another date in the same document proves the convention (e.g. a day part >12), it
+uses that; only when no such evidence exists does it fall back to a locale default (DD/MM), and it always
+flags the fallback with `confidence < 1.0` and a non-empty `assumption` string. That mechanism was never
+exposed as something the agent could call for a date the *user* types directly into a question — the tool
+schemas' `date_from`/`date_to` parameters are documented as "ISO date YYYY-MM-DD," which silently pushed
+the DD/MM-vs-MM/DD decision onto the model's own judgment with no grounding and no disclosure, unlike the
+document-extraction path.
+
+New tool `resolve_date(raw)` (`agent/tools.py`) is a thin wrapper reusing `DocumentDateResolver` directly
+— for `"05/07/2026"` it returns `{"date": "2026-07-05", "confidence": 0.6, "assumption": "ambiguous
+DD/MM-vs-MM/DD date resolved via locale default (DMY)"}`. A single date typed in a question has no other
+dates to cross-reference (unlike a document), so an ambiguous one always falls back to the locale default
+and is always flagged — never silently guessed. New prompt rule 4a-i requires calling this instead of
+parsing an ambiguous numeric date directly, and disclosing the interpretation used whenever `assumption`
+is non-empty, mirroring how document-extracted ambiguous dates are already disclosed. 7 new tests
+(`tests/test_resolve_date.py`), including the exact `05/07/2026` case from the question. Not yet
+live-verified — blocked by the same Anthropic credit exhaustion as §19.
+
+**Merchant-alias normalization — the noise-stripping half, not the brand-alias half.** Floated in
+`NOT_IMPLEMENTED.md` §D as "not needed for this dataset's merchant names, which are already consistent."
+Checked that claim directly against the real ledger before building anything: every `merchant_raw` value
+in `dataset_public/` is in fact already internally consistent (no two spellings collide for the same real
+merchant) — so there was no evidence of the failure mode a curated alias table (`AMZN` → `Amazon`) would
+fix, and building one anyway would be exactly the "unverified matcher" risk §A already warns against for
+the linking layer: guessing wrong actively corrupts grouping rather than just failing to help it.
+
+What *is* buildable and verifiable without fixture evidence: noise that's unambiguous regardless of which
+specific merchant it is. `normalize.normalize_merchant()` strips whitespace/case and a trailing
+corporate-entity suffix (PVT, PVT LTD, LTD, LIMITED, INC, LLC, CO) — verified directly against two real
+merchant strings already in the dataset, `"GRANDEUR JEWELLERS PVT"` → `"GRANDEUR JEWELLERS"` and
+`"PVR CINEMAS LTD"` → `"PVR CINEMAS"`. Deliberately does NOT touch asterisk-separated processor patterns
+(`"OPENAI *CHATGPT"`) — which side of the `*` is the real merchant varies by processor with no general
+rule, so guessing is left undone rather than guessed wrong.
+
+New field `Transaction.merchant_normalized` (additive — `merchant_raw` is untouched and still what
+citations use), computed once in `resolve.assign_merchant_normalization()`, run first in `resolve_all`
+so duplicate detection sees it. **Caught one real bug while wiring this in and verifying it end-to-end**:
+`merchant_normalized` was computed correctly in memory but came back `None` after a real ingest-and-reload
+round-trip — `store.py`'s SQLite schema, `INSERT`, and `_row_to_transaction` had no column for it at all,
+so the field was silently dropped the moment a document was persisted and reloaded. This is exactly the
+kind of gap that only an actual round-trip check catches, not a unit test against an in-memory list —
+found and fixed (new `merchant_normalized TEXT` column, threaded through `insert_transactions` and
+`_row_to_transaction`) before declaring this done, then re-verified against the real dataset. Wired into
+`detect_cross_document_duplicates`'s and `detect_duplicates`'s grouping keys and `aggregate_spending`'s
+`group_by="merchant"` (all previously grouped on raw merchant text). 204 tests passing including 8 new
+ones (`tests/test_normalize.py::TestNormalizeMerchant`), all against real dataset merchant strings, not
+synthetic ones.
+
+**Captured reasoning — closing the exact gap `NOT_IMPLEMENTED.md` §E used to describe.** That section
+previously said, honestly: tool name + tool input were captured, but there was "no separate 'why it chose
+this tool' reasoning text... even if the trace were persisted." Direct instruction: this project's
+"comprehensive logging" checklist item explicitly wants reasoning, not just inputs/outputs, and any place
+that gap existed should be closed now.
+
+`agent/loop.py`'s `run_agent` already discards the model's ordinary response text once it extracts the
+`tool_use` blocks it needs — that text (the model's own explanation of what it's about to do and why) was
+being thrown away, not missing from the API response. Fixed by capturing it: `ToolCallRecord` gained a
+`reasoning` field (the text alongside that turn's tool calls) and `AgentRunResult` gained
+`final_reasoning` (the text alongside the winning `final_answer` call). New prompt rule 8 asks for one
+brief sentence of reasoning per tool call, framed explicitly as an audit-log entry, not a second answer.
+`cli.py --trace` now prints both. Critically, **this reasoning is never fed into verification** —
+`verify()`'s grounding/citation checks only ever walk `tool_result`, never `reasoning` — so a model that
+"reasons" confidently toward a fabricated number still fails the actual grounded check; this is asserted
+directly in a new test (`test_reasoning_never_affects_verification_outcome`), not just assumed.
+
+Uses the model's normal response text, not Claude's separate extended-thinking feature — a deliberate,
+smaller change with an immediate, verifiable payoff, versus a larger one requiring new request-time
+config and no offline way to confirm it improved anything. 4 new tests
+(`tests/test_loop.py::TestReasoningCapture`) using a stub Anthropic client (no live API call, no
+credits) — this is also the first test coverage `run_agent` itself has ever had; every prior test
+exercised its callees (`tools.py`, `verifier.py`) directly, since a mock-client pattern for the loop
+hadn't been built until now.
+
+**All three: 208/208 tests passing** (up from 189). Live verification of all three — including the exact
+`05/07/2026` question and a real end-to-end reasoning capture against the live model — remains blocked by
+the Anthropic account's credit exhaustion (§19) and is still pending.

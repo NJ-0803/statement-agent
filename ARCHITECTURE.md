@@ -219,6 +219,18 @@ the filter-logic layer. This protects the *serialized result size*, not the in-m
 itself, which is still a full Python scan over `list[Transaction]` — pushing that into SQL is the
 next, deliberately deferred step (§G's #3).
 
+**Merchant normalization (`normalize.normalize_merchant`, `resolve.assign_merchant_normalization`).**
+Runs first in `resolve_all`, before duplicate detection. Sets `Transaction.merchant_normalized` — an
+additive field alongside `merchant_raw` (citations still use the raw value) — by stripping whitespace,
+case, and a trailing corporate-entity suffix (PVT, PVT LTD, LTD, LIMITED, INC, LLC, CO). Both
+`detect_cross_document_duplicates`/`detect_duplicates`'s grouping keys and `aggregate_spending`'s
+`group_by="merchant"` group on the normalized value now, not the raw one. Deliberately does not attempt
+a curated brand-alias table (`AMZN` → `Amazon`) or resolve payment-processor `PREFIX *SUFFIX` patterns —
+see `NOT_IMPLEMENTED.md` §D for why (no real-dataset evidence to verify one against, and guessing wrong
+actively corrupts grouping). See `DECISIONS.md` §20, including a real store.py round-trip bug this
+caught (the field computed correctly in memory but was silently dropped on save/reload until the SQLite
+schema was updated to carry it).
+
 ### 2.5 The ledger (`store.py`)
 
 **What:** SQLite, two tables (`documents`, `transactions`), amounts stored as `TEXT` and parsed back
@@ -333,14 +345,15 @@ sheets) is fundamentally tabular once extracted, so it gets a tabular retrieval 
 
 ## 4. The agent loop and tool calls — what actually happens when you ask a question
 
-### 4.1 The ten tools
+### 4.1 The eleven tools
 
-Everything the model can do is one of these. Nine return data; the tenth ends the turn.
+Everything the model can do is one of these. Ten return data; the eleventh ends the turn.
 
 | Tool | Purpose | Never does |
 |---|---|---|
 | `dataset_coverage` | Actual min/max date and currencies in the ledger | Guess at coverage the ledger doesn't have |
 | `resolve_period` | Turns `"last_quarter"`, `"last_month"`, `"2025-Q2"` etc. into exact ISO start/end dates, correctly handling the year-boundary case | Let the model compute a date range by hand |
+| `resolve_date` | Resolves ONE raw date string the same way ambiguous document dates are resolved at ingestion (§2.4) — flags `assumption`/`confidence<1.0` when a DD/MM-vs-MM/DD guess was needed | Let the model silently guess which convention a date like "05/07/2026" uses |
 | `list_documents` | Every source file, its declared account/currency/period, and any ingest-time `warnings` (security flags, structural anomalies) | Require a bank name to appear as a merchant string to be findable |
 | `search_transactions` | Raw filtered rows, with `sort_by`/`limit` for "the single largest transaction"; capped at 200 rows by default with `total_matched`/`truncated` disclosed (§2.4) | Compute any total, or silently return a partial result as if it were complete |
 | `aggregate_spending` | The only way to get a spend number — per-currency `verified_total`/`uncertain_total`, optional `group_by`, `possibly_missing_uncategorized_count` when filtered by category, and an optional `convert_to` for a combined multi-currency total (§2.6) | Blend currencies without an explicit `convert_to`, or hide flagged/uncategorized transactions silently |
@@ -367,7 +380,13 @@ than as a plan committed to before execution.
    as a `tool_result`. This repeats — Claude can call several tools across several turns before it's
    ready to answer (real traces run 1 to 5 tool calls deep).
 3. Every tool call and its result is appended to a `trace: list[ToolCallRecord]` that persists for the
-   *whole* conversation, not just the current turn.
+   *whole* conversation, not just the current turn. Each record also carries `reasoning` — the model's
+   own one-sentence explanation of why it made that call (prompt rule 8), extracted from the response's
+   text alongside the tool call — so the trace captures *why*, not just *what ran with what input*.
+   `AgentRunResult.final_reasoning` carries the same for the winning `final_answer` call. This reasoning
+   is display/audit-only: `verify()` (step 4 below) never inspects it, only `tool_result` — asserted
+   directly in `tests/test_loop.py`, so a model that "reasons" toward a fabricated number still fails
+   the actual grounded check.
 4. When Claude calls `final_answer`, the proposed answer — `answer_text`, `proposed_status`,
    `verified_amounts`, `cited_transaction_ids`, `caveats` — is handed to `agent/verifier.py::verify()`,
    which runs **without calling the LLM at all**:

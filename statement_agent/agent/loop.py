@@ -181,6 +181,23 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "name": "resolve_date",
+        "description": (
+            "Deterministically resolves ONE raw date string, the same way ambiguous document dates are "
+            "resolved at ingestion. ALWAYS call this instead of parsing a numeric date yourself whenever "
+            "a question contains an explicit numeric date like '05/07/2026' — both parts are <=12, so "
+            "it's genuinely ambiguous (5 July vs 7 May) and must never be guessed silently. Returns "
+            "`date` (ISO), `confidence` (1.0 = unambiguous format like an ISO date or a textual month "
+            "name; <1.0 = ambiguous, resolved via a locale-default DD/MM guess), and `assumption` "
+            "(non-empty when a guess was used) — if `assumption` is non-empty, disclose it in your answer."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"raw": {"type": "string", "description": "the date string as written, e.g. '05/07/2026' or '5 July 2025'"}},
+            "required": ["raw"],
+        },
+    },
+    {
         "name": "final_answer",
         "description": "Call this to give your final answer. This is the ONLY way to complete a turn — do not just write prose.",
         "input_schema": {
@@ -258,6 +275,8 @@ def _dispatch(tool_name: str, tool_input: dict, ledger: list[Transaction], docum
         return T.dataset_coverage(ledger)
     if tool_name == "resolve_period":
         return T.resolve_period(tool_input["period"], as_of=_parse_date(tool_input.get("as_of")))
+    if tool_name == "resolve_date":
+        return T.resolve_date(tool_input["raw"])
     raise ValueError(f"unknown tool: {tool_name}")
 
 
@@ -290,6 +309,9 @@ class AgentRunResult:
     verification: VerificationResult
     trace: list[ToolCallRecord] = field(default_factory=list)
     attempts: int = 0
+    final_reasoning: str = ""  # the model's own text alongside the final_answer call that won —
+    # the "why" behind the answer, for the audit log; separate from answer_text, which is what's
+    # actually shown to the user
 
 
 def run_agent(
@@ -314,6 +336,12 @@ def run_agent(
         )
         messages.append({"role": "assistant", "content": response.content})
 
+        # Text the model wrote alongside this turn's tool calls — its own explanation of why it's
+        # calling what it's calling, captured for the audit log (ToolCallRecord.reasoning /
+        # AgentRunResult.final_reasoning below). Never fed into verification: the grounding/citation
+        # checks only ever inspect tool_result, never this narration about the model's own intent.
+        reasoning = "\n".join(b.text for b in response.content if b.type == "text").strip()
+
         tool_uses = [b for b in response.content if b.type == "tool_use"]
         if not tool_uses:
             messages.append({"role": "user", "content": "Call the final_answer tool to complete your response."})
@@ -326,7 +354,7 @@ def run_agent(
                 continue
             try:
                 result = _dispatch(tu.name, tu.input, ledger, documents)
-                trace.append(ToolCallRecord(tu.name, tu.input, result))
+                trace.append(ToolCallRecord(tu.name, tu.input, result, reasoning=reasoning))
                 result_blocks.append({"type": "tool_result", "tool_use_id": tu.id, "content": json.dumps(_to_jsonable(result))})
             except Exception as e:  # noqa: BLE001 - a bad tool call must not crash the whole answer
                 result_blocks.append({"type": "tool_result", "tool_use_id": tu.id, "content": f"error: {e}", "is_error": True})
@@ -340,7 +368,7 @@ def run_agent(
         verify_attempts += 1
 
         if verification.passed:
-            return AgentRunResult(final_answer, verification, trace, verify_attempts)
+            return AgentRunResult(final_answer, verification, trace, verify_attempts, final_reasoning=reasoning)
 
         if verify_attempts >= max_attempts:
             fallback = FinalAnswer(
@@ -352,7 +380,7 @@ def run_agent(
                 proposed_status="INSUFFICIENT_INFORMATION",
                 caveats=verification.failures,
             )
-            return AgentRunResult(fallback, verification, trace, verify_attempts)
+            return AgentRunResult(fallback, verification, trace, verify_attempts, final_reasoning=reasoning)
 
         result_blocks.append({
             "type": "tool_result",
@@ -371,4 +399,5 @@ def run_agent(
         VerificationResult(status="INSUFFICIENT_INFORMATION", passed=False, failures=["max tool iterations exceeded"]),
         trace,
         verify_attempts,
+        final_reasoning=reasoning,
     )

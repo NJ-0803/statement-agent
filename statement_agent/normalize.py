@@ -240,3 +240,39 @@ def is_date_plausible(d: date, *, statement_start: date | None, statement_end: d
         hi = statement_end.toordinal() + tolerance_days
         return lo <= d.toordinal() <= hi
     return True
+
+
+_TRAILING_CORP_SUFFIX_RE = re.compile(
+    r"\s+(PVT\.?\s*LTD\.?|PVT\.?|LTD\.?|LIMITED|LLC|INC\.?|CO\.?)\s*$", re.IGNORECASE
+)
+
+
+def normalize_merchant(raw: str | None) -> str | None:
+    """Canonicalizes a merchant string for grouping/dedup purposes. Never replaces
+    merchant_raw — that stays the citation/provenance value seen in the source
+    document; this is an additional field for consolidating what's obviously the
+    same merchant.
+
+    Deliberately conservative: only strips noise that's unambiguous regardless of
+    which specific merchant it is — collapsed whitespace, case, and a trailing
+    corporate-entity suffix (PVT, PVT LTD, LTD, LIMITED, INC, LLC, CO) that
+    different banks/processors inconsistently append for the exact same company
+    ("GRANDEUR JEWELLERS PVT" and a hypothetical "GRANDEUR JEWELLERS" on another
+    statement are almost certainly the same merchant; stripping the suffix lets
+    them group together instead of fragmenting).
+
+    Deliberately does NOT attempt to resolve asterisk-separated payment-processor
+    prefixes/suffixes (e.g. "SQ *Blue Bottle Coffee" vs "OPENAI *ChatGPT") — which
+    side of the "*" is the real merchant varies by processor with no reliable
+    general rule, and guessing wrong would actively corrupt grouping rather than
+    just fail to help it. A curated alias table for known processor/brand
+    patterns is the natural next step once real fixture data with actual
+    collisions exists to build and verify one against (see NOT_IMPLEMENTED.md) —
+    not guessed at here, for the same reason the cross-transaction linking layer
+    in that document isn't guessed at either.
+    """
+    if not raw:
+        return None
+    text = " ".join(raw.strip().upper().split())
+    text = _TRAILING_CORP_SUFFIX_RE.sub("", text).strip()
+    return text or None

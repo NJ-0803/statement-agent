@@ -103,11 +103,25 @@ currently tracks. Not built because it adds LLM calls (and non-determinism) to s
 suite currently checks with an exact expected output — worth doing with a real budget for building and
 evaluating the categorizer's accuracy properly, not as a quick addition.
 
-**No general merchant-alias fuzzy matching.** "AMZN" was added as a specific keyword after the
-edge-case audit found it missing, but there's no general normalization layer mapping merchant name
-variants (`AMZN` / `Amazon Marketplace` / `AMZN Mktp IN`) to one canonical merchant while preserving
-the raw description. Not needed for this dataset's merchant names, which are already consistent per
-merchant; would matter at real-world scale with messier real bank feeds.
+**Merchant-alias normalization — partially built.** `normalize.normalize_merchant()` (wired into
+`resolve.assign_merchant_normalization`, run before duplicate detection) now strips noise that's
+unambiguous regardless of which specific merchant it is — whitespace, case, and a trailing
+corporate-entity suffix (PVT, PVT LTD, LTD, LIMITED, INC, LLC, CO) that different banks/processors
+inconsistently append for the exact same company. `merchant_normalized` is a new field alongside
+`merchant_raw` (never replacing it — citations still use the raw value), and both
+`detect_cross_document_duplicates` and `aggregate_spending`'s `group_by="merchant"` now group on it, so
+"GRANDEUR JEWELLERS PVT" on one statement and a hypothetical "GRANDEUR JEWELLERS" on another would
+correctly consolidate. See `DECISIONS.md` §20.
+
+**Deliberately still deferred: a curated brand-alias dictionary** mapping genuinely different-looking
+strings for the same merchant (`AMZN` / `Amazon Marketplace` / `AMZN Mktp IN`, or resolving which side of
+a payment-processor's `PREFIX *SUFFIX` pattern is the real merchant). "AMZN" was added as a one-off
+keyword to `categorize()`'s Shopping list after the edge-case audit found it missing, but generalizing
+that into a real alias table needs actual collision fixture data to build and verify against — this
+dataset's own merchant strings are already internally consistent (no two spellings collide for the same
+real merchant), so there's nothing to verify a curated table against yet, and guessing at asterisk-split
+direction risks actively corrupting grouping rather than just failing to help it — the same reasoning as
+§A's cross-transaction-linking deferral.
 
 ---
 
@@ -119,16 +133,23 @@ specifics — "duplicating a source document never changes the verified total," 
 rows never changes an aggregate answer," "adding an internal transfer never changes total spend." These
 are strong, cheap-to-state properties; not built for time, not because they're not valuable.
 
-**No persisted execution-trace log, and no captured model reasoning.** `--trace` on the CLI prints the
-tool-call sequence for the current run, and the web UI shows it per-answer, but neither is saved
-anywhere — a grader can inspect what the agent did on the question they just asked, but there's no log
-to review after the session ends. What's captured is also narrower than "comprehensive": tool name +
-tool input, not tool *output*, and — since this build never requests Claude's extended-thinking blocks
-— there's no separate "why it chose this tool" reasoning text to capture even if the trace were
-persisted; the only artifacts are the tool-call sequence and the final `answer_text`. Cheap to add (the
-`ToolCallRecord` data already exists in memory, and thinking blocks are a request-time flag away);
-not done because it's a pure observability addition with no correctness impact on its own, and time
-went to the fixes that changed actual answers first.
+**Model reasoning is now captured — built.** Previously true, no longer: `--trace` used to print only
+tool name + tool input, with no separate "why it chose this tool" text captured anywhere, even in
+memory. `ToolCallRecord` now carries a `reasoning` field (the model's own text alongside each tool call,
+extracted from the response's text blocks in `agent/loop.py`'s `run_agent`), and `AgentRunResult` carries
+a top-level `final_reasoning` for the text alongside the winning `final_answer` call — the "why," not
+just the "what," is available on the same trace object correctness already relies on. `cli.py --trace`
+prints both. This uses the model's ordinary response text, not Claude's separate extended-thinking
+feature — deliberately: `verify()`'s grounding/citation checks only ever inspect `tool_result`, never
+`reasoning`, specifically so a model "reasoning" its way to a wrong number still fails verification on
+the actual grounded check (tested in `tests/test_loop.py`). See `DECISIONS.md` §20.
+
+**Still not built: a persisted, cross-session execution-trace log.** The reasoning/trace data now exists
+in full on every `AgentRunResult`, but nothing writes it to durable storage — `--trace` and the web UI
+both show it only for the current run; a grader can inspect what the agent did on the question they just
+asked, but there's no log file to review after the session ends. Cheap to add now that the data itself
+is captured (append each `AgentRunResult` to a JSONL file, one line per question) — not done because it's
+a pure storage/retrieval addition with no correctness impact on its own.
 
 ---
 

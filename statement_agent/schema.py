@@ -85,6 +85,7 @@ class Transaction:
 
     description_raw: str = ""
     merchant_raw: str | None = None
+    merchant_normalized: str | None = None  # canonicalized for grouping/dedup; merchant_raw stays the citation value
 
     amount: Decimal = Decimal("0")
     currency: str = "INR"

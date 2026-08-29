@@ -1,7 +1,7 @@
 from datetime import date
 from decimal import Decimal
 
-from statement_agent.normalize import DocumentDateResolver, is_date_plausible, normalize_amount
+from statement_agent.normalize import DocumentDateResolver, is_date_plausible, normalize_amount, normalize_merchant
 from statement_agent.schema import Direction
 
 
@@ -156,3 +156,38 @@ class TestDatePlausibility:
         assert is_date_plausible(
             date(2025, 5, 30), statement_start=date(2025, 6, 1), statement_end=date(2025, 6, 30)
         )
+
+
+class TestNormalizeMerchant:
+    def test_strips_bare_pvt_suffix_on_real_dataset_merchant(self):
+        # real merchant string from dataset_public: GRANDEUR JEWELLERS PVT
+        assert normalize_merchant("GRANDEUR JEWELLERS PVT") == "GRANDEUR JEWELLERS"
+
+    def test_strips_ltd_suffix_on_real_dataset_merchant(self):
+        # real merchant string from dataset_public: PVR CINEMAS LTD
+        assert normalize_merchant("PVR CINEMAS LTD") == "PVR CINEMAS"
+
+    def test_strips_pvt_ltd_combined_suffix(self):
+        assert normalize_merchant("ACME TRADERS PVT LTD") == "ACME TRADERS"
+        assert normalize_merchant("ACME TRADERS PVT. LTD.") == "ACME TRADERS"
+
+    def test_strips_limited_llc_inc_co_suffixes(self):
+        assert normalize_merchant("WIDGET CO LIMITED") == "WIDGET CO"  # only the trailing token is stripped once
+        assert normalize_merchant("FOO INC") == "FOO"
+        assert normalize_merchant("BAR LLC") == "BAR"
+
+    def test_collapses_whitespace_and_case(self):
+        assert normalize_merchant("  swiggy   bangalore  ") == "SWIGGY BANGALORE"
+
+    def test_does_not_touch_asterisk_separated_names(self):
+        # deliberately conservative: which side of "*" is the real merchant is
+        # processor-dependent and not guessed at (see normalize_merchant's docstring)
+        assert normalize_merchant("OPENAI *CHATGPT") == "OPENAI *CHATGPT"
+
+    def test_none_and_empty_input(self):
+        assert normalize_merchant(None) is None
+        assert normalize_merchant("") is None
+        assert normalize_merchant("   ") is None
+
+    def test_merchant_with_no_noise_is_unchanged_besides_case(self):
+        assert normalize_merchant("UBER INDIA") == "UBER INDIA"

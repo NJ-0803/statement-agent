@@ -38,6 +38,9 @@ class ToolCallRecord:
     tool_name: str
     tool_input: dict
     tool_result: object  # dataclass or list of dataclasses returned by statement_agent.agent.tools
+    reasoning: str = ""  # the model's own text explaining why it made this call, for the audit log —
+    # never fed into grounding/citation checks (those only ever walk tool_result), since this is the
+    # model's narration about itself, not data a tool returned
 
 
 @dataclass

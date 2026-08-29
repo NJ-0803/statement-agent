@@ -87,7 +87,10 @@ def run_one(q: dict, ledger, documents) -> dict:
         result["verified_amounts"] = [
             {"currency": a.currency, "amount": a.amount, "label": a.label} for a in r.final_answer.verified_amounts
         ]
-        result["tool_trace"] = [{"tool": t.tool_name, "input": t.tool_input} for t in r.trace]
+        result["tool_trace"] = [
+            {"tool": t.tool_name, "input": t.tool_input, "reasoning": t.reasoning} for t in r.trace
+        ]
+        result["final_reasoning"] = r.final_reasoning
         result["attempts"] = r.attempts
     except Exception as e:  # noqa: BLE001 - a crash on any single question must not stop the run
         result["error"] = f"{type(e).__name__}: {e}"

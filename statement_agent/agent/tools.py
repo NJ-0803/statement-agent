@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import Decimal
 
+from ..normalize import DocumentDateResolver
 from ..schema import Direction, EconomicType, Transaction
 
 
@@ -36,6 +37,7 @@ class TxnView:
     transaction_id: str
     date: str | None
     merchant: str | None
+    merchant_normalized: str | None
     description: str
     amount: str
     currency: str
@@ -56,6 +58,7 @@ def _view(t: Transaction) -> TxnView:
         transaction_id=t.transaction_id,
         date=t.transaction_date.isoformat() if t.transaction_date else None,
         merchant=t.merchant_raw,
+        merchant_normalized=t.merchant_normalized,
         description=t.description_raw,
         amount=str(t.amount),
         currency=t.currency,
@@ -267,7 +270,9 @@ def aggregate_spending(
             elif group_by == "category":
                 key = t.category or "UNCATEGORIZED"
             elif group_by == "merchant":
-                key = t.merchant_raw or "UNKNOWN"
+                # normalized, not raw: consolidates the same real merchant recorded
+                # with an inconsistent trailing corporate suffix across documents
+                key = t.merchant_normalized or t.merchant_raw or "UNKNOWN"
             else:
                 continue
             group_breakdown.setdefault(key, {})
@@ -546,3 +551,27 @@ def resolve_period(period: str, *, as_of: date | None = None) -> dict:
         return {"start": None, "end": None, "resolved_as": None, "error": f"unrecognized period: {period!r}"}
 
     return {"start": start.isoformat(), "end": end.isoformat(), "resolved_as": key}
+
+
+def resolve_date(raw: str) -> dict:
+    """Deterministically resolves a single raw date string the same way ambiguous
+    document dates are resolved at ingestion (`normalize.DocumentDateResolver`) — so
+    the agent never has to guess DD/MM vs MM/DD itself for a date typed directly in a
+    question. "05/07/2026" is genuinely ambiguous in isolation (both parts are <=12):
+    it could be 5 July or 7 May. ALWAYS call this instead of parsing an ambiguous
+    numeric date yourself, and if `assumption` is non-empty, disclose it in the
+    answer — the interpretation used a locale-default guess, not a certainty.
+
+    Unlike ingestion, which can disambiguate a document-wide DD/MM-vs-MM/DD
+    convention from OTHER dates in the same document, a single date typed in a
+    question has no such context to draw on — so an ambiguous numeric date here
+    always falls back to the locale default (DD/MM) and is always flagged with
+    confidence < 1.0, never silently guessed.
+    """
+    parsed = DocumentDateResolver().parse(raw)
+    return {
+        "date": parsed.value.isoformat() if parsed.value else None,
+        "confidence": parsed.confidence,
+        "assumption": parsed.assumption,
+        "raw": raw,
+    }

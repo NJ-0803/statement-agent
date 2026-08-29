@@ -75,7 +75,7 @@ thin wrapper over the exact same `Store`/`run_agent()` the CLI uses — no separ
 python -m pytest tests/ -v
 ```
 
-189 tests, all runnable offline with no API key — they cover normalization (currency/date parsing),
+208 tests, all runnable offline with no API key — they cover normalization (currency/date parsing),
 PDF/CSV extraction (including the injection-defense and duplicate-detection tests described below),
 resolution (categorization, duplicates, reconciliation, anomaly detection), the query/aggregation
 tools, and the answer verifier's grounding/provenance checks. See `DECISIONS.md` §11 for the three real
@@ -102,7 +102,11 @@ runs as part of `pytest tests/` via `tests/test_gold_eval.py`, one test per case
   sheets, and standalone statement images (a photographed or screenshotted page) via the same
   vision-OCR path used as a PDF fallback.
 - Normalize dates across ISO, `DD/MM/YYYY`, `MM-DD-YYYY`, and textual formats, resolving ambiguous
-  numeric dates using other dates in the same document as context.
+  numeric dates using other dates in the same document as context — and the same disambiguation for a
+  date typed directly in a question (e.g. "05/07/2026"), via a dedicated `resolve_date` tool, always
+  disclosing when a locale-default guess was needed rather than silently picking one.
+- Normalize merchant names for grouping and duplicate detection (stripping noise like a trailing "PVT
+  LTD"), while always citing the original, unmodified merchant text from the source document.
 - Normalize currency across `₹`, `Rs.`, `INR`, `USD`, bare numbers, `CR`/`DR` suffixes, and
   parenthesized negatives — using exact `Decimal` arithmetic throughout, never floats.
 - Fall back to vision-model OCR for pages with no extractable text (e.g. scanned statements), while
@@ -136,6 +140,10 @@ runs as part of `pytest tests/` via `tests/test_gold_eval.py`, one test per case
   transaction row in the first place; see `DECISIONS.md` §6), not just via a system-prompt request.
 - Say "I don't have enough information" when the ledger doesn't cover the question (e.g. a date range
   outside every statement's period) rather than estimating.
+- Log its own reasoning, not just tool names and inputs — every tool call carries a one-sentence "why"
+  from the model alongside it, and the final answer carries a separate `final_reasoning`, both available
+  via `--trace`, but never fed into the verifier's grounding checks (which only ever inspect actual tool
+  results, so "confident reasoning" toward a fabricated number still fails verification).
 
 ## What it can't do (yet)
 
