@@ -95,7 +95,7 @@ class TestFabricatedCitationFails:
     def test_citing_a_real_id_that_was_actually_returned_passes(self):
         ledger = _ledger()
         result = search_transactions(ledger, category="Dining")
-        real_id = result[0].transaction_id
+        real_id = result.results[0].transaction_id
         trace = [ToolCallRecord("search_transactions", {"category": "Dining"}, result)]
 
         answer = FinalAnswer(

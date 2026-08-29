@@ -107,6 +107,101 @@ class TestCrossDocumentDuplicateDetection:
         assert len(ledger) == count_before
 
 
+class TestCrossDocumentDuplicateDetectionAtScale:
+    """The original implementation compared every candidate against every other
+    one directly (O(n^2)) — invisible at ~90 real transactions, infeasible at
+    real scale (100k transactions -> 5 billion comparisons). These tests build a
+    large synthetic ledger to prove the grouped rewrite is both still correct
+    AND actually fast, not just correct in theory.
+    """
+
+    @staticmethod
+    def _synthetic_ledger(n_unique: int, *, planted_duplicate_pairs: int):
+        import uuid
+        from datetime import date, timedelta
+
+        from statement_agent.schema import Direction, EconomicType, Transaction
+
+        ledger: list[Transaction] = []
+        base_date = date(2020, 1, 1)
+        merchants = [f"MERCHANT_{i}" for i in range(50)]  # deliberately few distinct merchants,
+        # so many transactions collide on (amount, currency, merchant) up to date —
+        # this is the pathological-ish case that stresses the per-group inner loop
+
+        for i in range(n_unique):
+            ledger.append(Transaction(
+                transaction_id=str(uuid.uuid4()),
+                document_id=f"doc_{i % 500}",  # spread across many documents
+                transaction_date=base_date + timedelta(days=i % 1000),
+                date_raw="", description_raw=merchants[i % len(merchants)],
+                merchant_raw=merchants[i % len(merchants)],
+                amount=Decimal(str(100 + (i % 200))), currency="INR",
+                direction=Direction.DEBIT, economic_type=EconomicType.PURCHASE,
+            ))
+
+        # plant genuine cross-document duplicates: same merchant/amount/currency,
+        # different document, dates 1 day apart (within the 3-day tolerance)
+        planted_ids = []
+        for i in range(planted_duplicate_pairs):
+            original = ledger[i]
+            dup = Transaction(
+                transaction_id=str(uuid.uuid4()),
+                document_id=f"planted_doc_{i}",  # guaranteed different from original's document
+                transaction_date=original.transaction_date + timedelta(days=1),
+                date_raw="", description_raw=original.merchant_raw, merchant_raw=original.merchant_raw,
+                amount=original.amount, currency=original.currency,
+                direction=Direction.DEBIT, economic_type=EconomicType.PURCHASE,
+            )
+            ledger.append(dup)
+            planted_ids.append((original.transaction_id, dup.transaction_id))
+
+        return ledger, planted_ids
+
+    def test_correctness_at_20k_transactions_with_planted_duplicates(self):
+        ledger, planted_ids = self._synthetic_ledger(20_000, planted_duplicate_pairs=25)
+        newly_flagged = detect_cross_document_duplicates(ledger)
+
+        flagged_ids = {t.transaction_id for t in newly_flagged}
+        for original_id, dup_id in planted_ids:
+            assert dup_id in flagged_ids, f"planted duplicate {dup_id} was not found"
+
+        by_id = {t.transaction_id: t for t in ledger}
+        for original_id, dup_id in planted_ids:
+            assert by_id[dup_id].duplicate_of == original_id
+
+    def test_completes_quickly_at_20k_transactions_not_quadratic(self):
+        import time
+
+        ledger, _ = self._synthetic_ledger(20_000, planted_duplicate_pairs=25)
+        start = time.monotonic()
+        detect_cross_document_duplicates(ledger)
+        elapsed = time.monotonic() - start
+        # generous bound (a real O(n^2) pass over ~20k transactions would take
+        # tens of seconds to minutes, not low single-digit seconds) — this isn't
+        # a tight performance benchmark, just a guard against silently
+        # regressing back to quadratic behavior
+        assert elapsed < 5.0, f"took {elapsed:.2f}s — likely regressed to O(n^2)"
+
+    def test_no_false_positives_among_the_many_same_merchant_transactions(self):
+        # 50 merchants across 20,000 transactions means ~400 transactions per
+        # merchant sharing the same rotating amount pool — exactly the case that
+        # stresses whether grouping produces spurious matches
+        ledger, planted_ids = self._synthetic_ledger(20_000, planted_duplicate_pairs=25)
+        newly_flagged = detect_cross_document_duplicates(ledger)
+        planted_dup_ids = {dup_id for _, dup_id in planted_ids}
+        # every flag must be either a planted duplicate, or a genuine coincidental
+        # match this synthetic generator could itself produce (same merchant/amount/
+        # currency, different doc, within 3 days) — never anything outside that
+        for t in newly_flagged:
+            if t.transaction_id in planted_dup_ids:
+                continue
+            original = next(x for x in ledger if x.transaction_id == t.duplicate_of)
+            assert t.amount == original.amount
+            assert t.currency == original.currency
+            assert t.document_id != original.document_id
+            assert abs((t.transaction_date - original.transaction_date).days) <= 3
+
+
 class TestAnomalyDetection:
     def test_grandeur_jewellers_flagged_as_outlier(self):
         result = parse_pdf_native(os.path.join(STATEMENTS, "meridian_credit_card_jul2025.pdf"))

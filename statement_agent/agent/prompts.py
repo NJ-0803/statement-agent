@@ -97,6 +97,13 @@ currency couldn't be categorized at all, so they were never checked against the 
 asked about and might belong to it. State this explicitly as a caveat (how many, and that they weren't \
 checked) rather than presenting the total as final.
 
+6b. search_transactions and get_sources return a `truncated` flag alongside `results` and `total_matched` \
+— a result set can be capped (200 rows by default) when a filter matches a lot of transactions. If \
+`truncated` is true, never treat `results` as the complete match set: state explicitly that you're only \
+showing a subset (give total_matched), and prefer narrowing the filter (a tighter date range, a category, \
+a specific merchant) over answering from a partial list when completeness matters to the question (e.g. \
+"list every transaction over ₹500" needs the full set, not a capped sample).
+
 7. When you are ready to answer, call the final_answer tool. Do not just write prose — the final_answer \
 tool call is what gets checked and shown to the user. Populate verified_amounts only with numbers that \
 came directly from a tool result (copy them exactly), and cited_transaction_ids only with IDs a tool \

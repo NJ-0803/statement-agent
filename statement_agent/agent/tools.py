@@ -81,6 +81,25 @@ def _in_range(t: Transaction, date_from: date | None, date_to: date | None) -> b
     return True
 
 
+# A large or unfiltered search against a small dataset (this project's ~90
+# transactions) never comes close to this. At real scale it's a real risk: an
+# unbounded search_transactions call could try to serialize thousands of rows
+# into one tool_result, which is both an unnecessary cost (tokens, latency) and
+# — more importantly — a trust risk if the caller isn't told a cap was applied.
+# A silently truncated "here are your transactions" that LOOKS complete is
+# exactly the kind of incomplete-retrieval failure (EDGE_CASES.md EC-26) this
+# system is built to avoid, so truncation is always disclosed, never silent.
+DEFAULT_SEARCH_LIMIT = 200
+
+
+@dataclass
+class SearchResult:
+    results: list[TxnView]
+    total_matched: int
+    truncated: bool
+    limit_applied: int | None  # the effective cap that was in force, None if no cap was needed
+
+
 def search_transactions(
     ledger: list[Transaction],
     *,
@@ -93,13 +112,18 @@ def search_transactions(
     include_flagged: bool = True,
     sort_by: str | None = None,  # "amount_desc" | "amount_asc" | "date_desc" | "date_asc"
     limit: int | None = None,
-) -> list[TxnView]:
+) -> SearchResult:
     """`sort_by`/`limit` exist so a question like 'what's my single biggest expense'
     can be answered by sorting deterministically in code (e.g. sort_by="amount_desc",
     limit=1) — never by the model eyeballing a list and picking the largest itself,
     same 'no mental math' principle as every aggregate number.
+
+    Returns a SearchResult, not a bare list — `total_matched` and `truncated` let
+    the caller (and the verifier/prompt policy) know when a result is a capped
+    subset rather than the complete match set, instead of a plain list silently
+    looking complete either way.
     """
-    results = []
+    matched = []
     for t in ledger:
         if category and t.category != category:
             continue
@@ -114,21 +138,28 @@ def search_transactions(
             continue
         if not include_flagged and not _is_clean(t):
             continue
-        results.append(t)
+        matched.append(t)
 
     if sort_by == "amount_desc":
-        results.sort(key=lambda t: t.amount, reverse=True)
+        matched.sort(key=lambda t: t.amount, reverse=True)
     elif sort_by == "amount_asc":
-        results.sort(key=lambda t: t.amount)
+        matched.sort(key=lambda t: t.amount)
     elif sort_by == "date_desc":
-        results.sort(key=lambda t: t.transaction_date or date.min, reverse=True)
+        matched.sort(key=lambda t: t.transaction_date or date.min, reverse=True)
     elif sort_by == "date_asc":
-        results.sort(key=lambda t: t.transaction_date or date.min)
+        matched.sort(key=lambda t: t.transaction_date or date.min)
 
-    if limit is not None:
-        results = results[:limit]
+    total_matched = len(matched)
+    effective_limit = limit if limit is not None else DEFAULT_SEARCH_LIMIT
+    truncated = total_matched > effective_limit
+    limited = matched[:effective_limit] if truncated else matched
 
-    return [_view(t) for t in results]
+    return SearchResult(
+        results=[_view(t) for t in limited],
+        total_matched=total_matched,
+        truncated=truncated,
+        limit_applied=effective_limit if (truncated or limit is not None) else None,
+    )
 
 
 @dataclass
@@ -406,9 +437,25 @@ def summarize_statement(ledger: list[Transaction], *, source_file: str) -> dict:
     }
 
 
-def get_sources(ledger: list[Transaction], transaction_ids: list[str]) -> list[TxnView]:
+def get_sources(ledger: list[Transaction], transaction_ids: list[str]) -> SearchResult:
+    """Bounded by the caller's own transaction_ids list in practice (it comes from
+    a prior, now-capped search_transactions/aggregate_spending call), but capped
+    and disclosed the same way regardless — defense in depth, not a load-bearing
+    assumption about what upstream callers will pass in.
+    """
     by_id = {t.transaction_id: t for t in ledger}
-    return [_view(by_id[tid]) for tid in transaction_ids if tid in by_id]
+    found = [tid for tid in transaction_ids if tid in by_id]
+
+    total_matched = len(found)
+    truncated = total_matched > DEFAULT_SEARCH_LIMIT
+    limited_ids = found[:DEFAULT_SEARCH_LIMIT] if truncated else found
+
+    return SearchResult(
+        results=[_view(by_id[tid]) for tid in limited_ids],
+        total_matched=total_matched,
+        truncated=truncated,
+        limit_applied=DEFAULT_SEARCH_LIMIT if truncated else None,
+    )
 
 
 def dataset_coverage(ledger: list[Transaction]) -> dict:

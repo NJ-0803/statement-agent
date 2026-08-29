@@ -139,37 +139,78 @@ without leaving India) is worth keeping visible next to the rest of this audit.
 
 ## G. Context/memory management as the ledger grows
 
-**What's missing:** any strategy for the ledger outgrowing what fits comfortably in the agent's
-context. Right now the *entire* ledger is loaded into memory and handed to `run_agent()` on every
-question (`cli.py`/`web/app.py` both call `store.all_transactions()` in full), and `search_transactions`
-has no default row cap — an unfiltered or loosely-filtered call against a hypothetical 100,000-row
-ledger would try to serialize thousands of `TxnView` rows into one tool result. `aggregate_spending`
-and `compare_periods` are safe at any scale (they return numbers, not raw rows), but `search_transactions`
-and `get_sources` aren't currently protected against this.
+This section was originally a single open gap. Two parts of it are now **built** (see `DECISIONS.md`
+§18 for the full writeup); the rest remains deliberately deferred, for the same reason as the rest of
+this document — no large real ledger exists yet to build and verify the remaining pieces against
+safely.
 
-**Why it's not built:** this dataset is ~90 transactions; the problem genuinely doesn't manifest here,
-and building a chunking/pagination/summarization strategy without a large real ledger to verify it
-against risks the same "unverified fix" trap as the extraction gaps in §B. The right first step is
-cheap and low-risk though — unlike most of §B, this doesn't need new matching logic, just bounds on
-what's already built: a sane default `limit` on `search_transactions` (already has the parameter,
-just no default cap), and eventually pagination on `list_documents` once document count, not just
-transaction count, gets large. Worth treating as a near-term fix rather than a deferred one, since
-unlike the linking layer it doesn't need fixture data to build safely — it only needs a sensible
-default value.
+**Built — #1: default row cap + truncation disclosure on `search_transactions`/`get_sources`.**
+Previously, `search_transactions` had a `limit` *parameter* but no default — an unfiltered or
+loosely-filtered call against a hypothetical 100,000-row ledger would try to serialize thousands of
+`TxnView` rows into one tool result, and `get_sources` (looking up a caller-supplied ID list) had no
+cap at all. Both now return a `SearchResult` (`results`, `total_matched`, `truncated`, `limit_applied`)
+capped at `DEFAULT_SEARCH_LIMIT = 200` when the caller doesn't pass an explicit `limit`. The cap itself
+is not the interesting part — silently returning a partial list that *looks* complete is exactly the
+EC-26 incomplete-retrieval failure mode this project is built to avoid, so `truncated`/`total_matched`
+are always populated and the system prompt (rule 6b) and tool descriptions require the agent to
+disclose a truncated result rather than presenting it as the full match set. `aggregate_spending` and
+`compare_periods` were already safe at any scale (they return numbers, not raw rows) and needed no
+change.
+
+**Built — #2: `detect_cross_document_duplicates` was O(n²), now O(n).** Not originally listed in this
+document at all — found during the same review that produced #1. The original implementation compared
+every candidate transaction against every other candidate directly; invisible at ~90 real transactions
+(a few thousand comparisons) but infeasible at real scale (100,000 transactions → 5 billion
+comparisons). Rewritten to group candidates by `(amount, currency, merchant)` first (O(n)), so the
+expensive pairwise date-tolerance comparison only ever runs within one small group of transactions that
+already match on everything else — matching semantics are unchanged, only the algorithm is. Verified
+against a synthetic 20,000-transaction ledger with 25 planted duplicates: all found, zero false
+positives, completes in well under a second.
+
+**Still deferred — #3, #4, #5, in the order they'd matter:**
+
+- **#3 — push filtering into SQL.** `search_transactions` currently loads the *entire* ledger into
+  Python and filters in-memory; the cap in #1 protects the tool *result*, not the work done to produce
+  it. At real scale the filtering itself (category/date/merchant matching over 100,000+ rows on every
+  call) should move into the SQL query in `store.py` instead of `list[Transaction]` comprehensions.
+  This is the natural next step once #1's cap proves the shape is right, but it changes the read path
+  more invasively than #1 did, so it's deferred rather than built alongside it.
+- **#4 — paginate `list_documents`.** Same class of gap as `search_transactions` had, but for document
+  count rather than transaction count. Not urgent — this dataset has 7 source documents, and even a
+  heavy real user is unlikely to have thousands of *statements* (as opposed to transactions) — but the
+  same truncation-disclosure pattern from #1 would apply directly if it ever needed it.
+- **#5 — pre-computed rollups for very large scale.** At a scale where even SQL-side filtering (#3) is
+  too slow per-question (e.g. millions of transactions), the next step would be maintaining
+  pre-aggregated summaries (by month/category/merchant) at ingest time, so `aggregate_spending` reads a
+  rollup instead of scanning raw rows. This is meaningfully more complex than #1-#4 (it introduces a
+  second source of truth that must stay consistent with the raw ledger, including after dedup flags
+  change) and isn't worth building without a real dataset at that scale to validate the consistency
+  story against.
+
+**Also relevant, noticed while fixing #1 but not in scope for it:** `aggregate_spending`'s
+`verified_transaction_ids`/`uncertain_transaction_ids`/`conversion_details` fields grow with the number
+of *matched* transactions, unbounded — the same class of risk #1 fixed for `search_transactions`, just
+not addressed here since it changes `AggregateResult`'s contract (dropping or sampling ID lists) rather
+than being a purely additive cap, and the right fix is naturally connected to #3: once filtering moves
+into SQL, an aggregate's full ID list stops making sense to return at all, and citing sources should
+go through a follow-up `search_transactions` (with the same filter) + `get_sources` call instead, which
+inherits the cap built here for free.
 
 ---
 
 ## Summary: what would change if this continued
 
-**§F (currency conversion) is done** — see `DECISIONS.md` §17. Of what's left:
+**§F (currency conversion) is done** — see `DECISIONS.md` §17. **§G's #1 (default cap + truncation
+disclosure) and #2 (O(n²) → O(n) dedup) are done** — see `DECISIONS.md` §18. Of what's left:
 
 - **If optimizing for architectural completeness:** §A (the `EconomicEvent` linking layer). It's the
   root cause behind the largest number of individually-small gaps, and — unlike §B and §C — there's a
   clear, buildable path to it that just needs real fixture data with actual refund/EMI/reimbursement
   pairs to build and verify against safely.
-- **If optimizing for cheap, near-term downside protection:** §G (context safety at scale) — a default
-  `limit` on `search_transactions`/`get_sources`, not new logic. Worth doing regardless of what else
-  gets picked, since it's pure protection with no design risk.
+- **If optimizing for scale beyond this dataset:** §G's #3-#5 — pushing `search_transactions`'s
+  filtering into SQL, paginating `list_documents`, and eventually pre-computed rollups. None are urgent
+  at ~90 transactions; #3 is the natural next step whenever a real large ledger exists to validate
+  against.
 
 ---
 

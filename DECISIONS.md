@@ -296,7 +296,7 @@ correctly rejected as "possible fabrication."
 
 ## 11. Test harness — what it caught
 
-`tests/` currently has 183 tests across normalization, economic-type refinement, deterministic period
+`tests/` currently has 189 tests across normalization, economic-type refinement, deterministic period
 resolution, CSV/PDF extraction, resolution, the query tools, and the verifier — all runnable offline
 with `pytest`, no API key needed. Plus `eval/gold_qa.py`, a separate gold-answer harness with 7
 hand-computed expected numbers checked against the real dataset (§ below this one has the full writeup
@@ -573,3 +573,77 @@ today's), and correctly reported zero failed conversions — matching a hand-com
 12 new tests (`tests/test_fx.py`), all offline (against the real bundled file, not mocks — a stronger
 test than mocking a fabricated API response), plus new `aggregate_spending` conversion tests in
 `tests/test_tools.py`. 177/177 passing.
+
+---
+
+## 18. Context/memory management at scale — built #1 and #2, documented the rest
+
+Discussed as "a very important futuristic scope" — the entire ledger currently loads into memory on
+every question, which is fine at ~90 transactions but wouldn't be at real scale. Rather than build a
+full solution against a dataset too small to validate it, the explicit direction was **build #1 and #2
+now, document the rest** — the two fixes that were cheap, low-risk, and verifiable even without a large
+real ledger; the remaining, more invasive changes stay as documented roadmap in `NOT_IMPLEMENTED.md` §G.
+
+**#1 — default row cap + truncation disclosure on `search_transactions` and `get_sources`.**
+`search_transactions` already had a `limit` parameter (for deterministic "single biggest transaction"
+answers) but no *default* — an unfiltered or loosely-filtered call against a hypothetical 100,000-row
+ledger would try to serialize thousands of rows into one tool result: unnecessary cost, and worse, a
+trust risk. A silently truncated "here are your transactions" that *looks* complete is exactly the
+EC-26 incomplete-retrieval failure mode (`EDGE_CASES.md`) this whole system exists to avoid — so the
+fix is not just a cap, it's a cap that's always disclosed.
+
+Both tools now return a `SearchResult` dataclass instead of a bare list:
+```python
+DEFAULT_SEARCH_LIMIT = 200
+
+@dataclass
+class SearchResult:
+    results: list[TxnView]
+    total_matched: int
+    truncated: bool
+    limit_applied: int | None  # the effective cap in force, None if no cap was needed
+```
+`get_sources` gets the identical treatment even though its input (a transaction-ID list) is normally
+caller-controlled and already bounded by an upstream, now-capped `search_transactions`/
+`aggregate_spending` call — defense in depth, not a load-bearing assumption about what a caller will
+pass in. The system prompt gained rule 6b, and both tools' schema descriptions in `agent/loop.py` were
+updated, so the agent is told explicitly to check `truncated` and disclose it rather than presenting a
+capped result as the complete match set.
+
+Live-verified: asked *"List every Swiggy transaction across all statements"* against the real dataset
+— the model called `search_transactions(merchant_contains="Swiggy", sort_by="date_desc", limit=200)`,
+got back all 5 real matches (`truncated=False` at this dataset's scale), and the full agent loop —
+tool-result JSON serialization of the new nested dataclass, the verifier's citation check, the
+direct-answer-then-follow-up prompt pattern from §15 — worked end-to-end with no changes needed beyond
+the tool itself, since `_to_jsonable`'s generic dataclass walk and the verifier's generic
+`_walk_values` both already handle arbitrary nested dataclasses, not just flat lists.
+
+**#2 — `detect_cross_document_duplicates`: O(n²) → O(n).** Not a previously-catalogued gap; found
+during this same review. The original implementation compared every candidate transaction against
+every *other* candidate directly — invisible at this dataset's ~90 transactions (a few thousand
+comparisons) but infeasible at real scale (100,000 transactions → 5 billion comparisons). Rewritten to
+group candidates by `(amount, currency, merchant)` first — an O(n) pass — so the expensive pairwise
+date-tolerance comparison only ever runs *within* one small group of transactions that already match on
+everything else (bounded by however many transactions share an exact merchant+amount+currency, e.g. a
+recurring subscription charge, which stays small even in a huge ledger). Matching semantics are
+unchanged from the original — only the algorithm changed.
+
+Verified two ways: the four pre-existing tests (including the real UBER INDIA cross-document duplicate
+case from the actual dataset) pass unchanged, and a new synthetic-scale test class
+(`TestCrossDocumentDuplicateDetectionAtScale` in `tests/test_resolve.py`) builds a 20,000-transaction
+ledger with 25 planted duplicates across only 50 distinct merchants (deliberately few, so many
+transactions collide on amount+currency+merchant — the case that actually stresses the per-group inner
+loop) and confirms: every planted duplicate is found, zero false positives among the many same-merchant
+transactions, and it completes in well under a second — proving the fix isn't just correct in theory
+but actually non-quadratic in practice.
+
+**#3-#5 (SQL-side filtering, `list_documents` pagination, pre-computed rollups) were deliberately not
+built** — see `NOT_IMPLEMENTED.md` §G for the reasoning on each. They're more invasive changes than #1
+and #2 (moving filtering into `store.py`'s SQL layer, or changing `AggregateResult`'s contract for its
+now-unbounded ID lists) and, consistent with the standard applied throughout this project, aren't worth
+building without a real large ledger to verify them against.
+
+6 new tests total (3 for the O(n²) fix's correctness/performance/no-false-positives at 20k transactions
+in `tests/test_resolve.py`, 3 for `search_transactions`'s new truncation behavior in `tests/test_tools.py`),
+plus every existing `search_transactions`/`get_sources` call site updated for the return-type change —
+189/189 passing.

@@ -181,31 +181,49 @@ def detect_cross_document_duplicates(transactions: list[Transaction], *, date_to
     within-document check, since two different documents may record the same
     transaction/posting date slightly differently. Returns the list of newly
     flagged transactions so the caller can persist just those changes.
-    """
-    candidates = [t for t in transactions if t.economic_type in (EconomicType.PURCHASE, EconomicType.REFUND) and t.duplicate_of is None]
-    newly_flagged: list[Transaction] = []
 
-    for i, a in enumerate(candidates):
-        if a.transaction_date is None:
+    Grouped by (amount, currency, merchant) BEFORE any pairwise comparison — an
+    earlier version compared every candidate transaction against every other one
+    directly, an O(n^2) pass that's invisible at this dataset's scale (~90
+    transactions, a few thousand comparisons) but becomes completely infeasible
+    at real scale (100k transactions -> 5 billion comparisons). Grouping first is
+    O(n); the pairwise date-tolerance check then only ever runs within one small
+    group of transactions that already match on everything else, which stays
+    small even in a huge ledger (the number of transactions sharing an exact
+    merchant+amount+currency, e.g. a recurring subscription charge). Matching
+    semantics are identical to the original version — only the algorithm changed.
+    """
+    candidates = [
+        t for t in transactions
+        if t.economic_type in (EconomicType.PURCHASE, EconomicType.REFUND)
+        and t.duplicate_of is None
+        and t.transaction_date is not None
+    ]
+
+    groups: dict[tuple[Decimal, str, str], list[Transaction]] = {}
+    for t in candidates:
+        key = (t.amount, t.currency, (t.merchant_raw or "").strip().lower())
+        groups.setdefault(key, []).append(t)
+
+    newly_flagged: list[Transaction] = []
+    for group in groups.values():
+        if len(group) < 2:
             continue
-        for b in candidates[i + 1:]:
-            if b.duplicate_of is not None or b.transaction_date is None:
-                continue
-            if a.document_id == b.document_id:
-                continue  # same-document case is detect_duplicates()'s job, not this pass's
-            if a.amount != b.amount or a.currency != b.currency:
-                continue
-            if (a.merchant_raw or "").strip().lower() != (b.merchant_raw or "").strip().lower():
-                continue
-            if abs((a.transaction_date - b.transaction_date).days) <= date_tolerance_days:
-                b.duplicate_of = a.transaction_id
-                b.duplicate_reason = (
-                    f"cross-document probable duplicate of {a.transaction_id} — same merchant/amount/"
-                    f"currency in a DIFFERENT source document, dated within {date_tolerance_days} day(s) "
-                    f"(possible overlapping statement periods or a re-ingested duplicate statement); "
-                    f"flagged for review, not auto-removed"
-                )
-                newly_flagged.append(b)
+        for i, a in enumerate(group):
+            for b in group[i + 1:]:
+                if b.duplicate_of is not None:
+                    continue
+                if a.document_id == b.document_id:
+                    continue  # same-document case is detect_duplicates()'s job, not this pass's
+                if abs((a.transaction_date - b.transaction_date).days) <= date_tolerance_days:
+                    b.duplicate_of = a.transaction_id
+                    b.duplicate_reason = (
+                        f"cross-document probable duplicate of {a.transaction_id} — same merchant/amount/"
+                        f"currency in a DIFFERENT source document, dated within {date_tolerance_days} day(s) "
+                        f"(possible overlapping statement periods or a re-ingested duplicate statement); "
+                        f"flagged for review, not auto-removed"
+                    )
+                    newly_flagged.append(b)
 
     return newly_flagged
 

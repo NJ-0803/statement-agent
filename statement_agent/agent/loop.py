@@ -59,7 +59,12 @@ TOOL_SCHEMAS = [
             "Search individual transactions with filters. Returns raw rows with source citations — "
             "does NOT compute any total. Use sort_by + limit=1 to find a single extreme transaction "
             "(e.g. 'my biggest expense' as a single-transaction question) — never sort or pick the "
-            "largest/smallest yourself from an unsorted list."
+            "largest/smallest yourself from an unsorted list. "
+            "Result has `results` (the rows, capped at 200 by default), `total_matched` (how many rows "
+            "actually matched the filters), and `truncated` (true if `results` is a partial subset of "
+            "`total_matched`). If `truncated` is true, the rows you got are NOT the complete match set — "
+            "say so explicitly rather than presenting them as if they were everything, and narrow the "
+            "filters (tighter date range, a category, etc.) if the user needs the full set."
         ),
         "input_schema": {
             "type": "object",
@@ -139,7 +144,12 @@ TOOL_SCHEMAS = [
     },
     {
         "name": "get_sources",
-        "description": "Look up full source/provenance detail for a specific list of transaction IDs already seen in a prior tool result.",
+        "description": (
+            "Look up full source/provenance detail for a specific list of transaction IDs already seen "
+            "in a prior tool result. Same shape as search_transactions: `results`, `total_matched`, "
+            "`truncated` — if you pass more than 200 IDs, only the first 200 come back and `truncated` "
+            "is true, so say so rather than treating the returned rows as the complete set."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {"transaction_ids": {"type": "array", "items": {"type": "string"}}},

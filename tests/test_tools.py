@@ -279,13 +279,13 @@ class TestDisputableTransactions:
 class TestSearchTransactions:
     def test_merchant_filter_is_case_insensitive(self):
         ledger = _ledger()
-        results = search_transactions(ledger, merchant_contains="swiggy")
+        results = search_transactions(ledger, merchant_contains="swiggy").results
         # 3 in the July statement (incl. the same-day repeat) + 1 each in May and June
         assert len(results) == 5
 
     def test_date_range_filter_excludes_outside_range(self):
         ledger = _ledger()
-        results = search_transactions(ledger, date_from=date(2025, 7, 1), date_to=date(2025, 7, 31))
+        results = search_transactions(ledger, date_from=date(2025, 7, 1), date_to=date(2025, 7, 31)).results
         assert all(date.fromisoformat(t.date) >= date(2025, 7, 1) for t in results if t.date)
         assert all(date.fromisoformat(t.date) <= date(2025, 7, 31) for t in results if t.date)
 
@@ -296,7 +296,7 @@ class TestSortAndLimit:
 
     def test_amount_desc_returns_largest_single_transaction_first(self):
         ledger = _ledger()
-        results = search_transactions(ledger, sort_by="amount_desc", limit=1)
+        results = search_transactions(ledger, sort_by="amount_desc", limit=1).results
         assert len(results) == 1
         assert results[0].merchant == "GRANDEUR JEWELLERS PVT"  # the known ₹80,000 outlier
         assert results[0].amount == "80000.00"
@@ -306,19 +306,75 @@ class TestSortAndLimit:
         # tied amounts (e.g. the two same-day ₹850 Swiggy charges) in original relative
         # order in BOTH directions, so reversing desc-by-id isn't exactly asc-by-id
         ledger = _ledger()
-        desc = search_transactions(ledger, sort_by="amount_desc")
-        asc = search_transactions(ledger, sort_by="amount_asc")
+        desc = search_transactions(ledger, sort_by="amount_desc").results
+        asc = search_transactions(ledger, sort_by="amount_asc").results
         assert [t.amount for t in desc] == [t.amount for t in asc][::-1]
 
     def test_limit_without_sort_still_truncates(self):
         ledger = _ledger()
-        results = search_transactions(ledger, limit=3)
+        results = search_transactions(ledger, limit=3).results
         assert len(results) == 3
 
     def test_no_sort_or_limit_returns_everything_unmodified(self):
         ledger = _ledger()
-        all_results = search_transactions(ledger)
-        assert len(all_results) == len(ledger)
+        result = search_transactions(ledger)
+        assert len(result.results) == len(ledger)
+        assert result.total_matched == len(ledger)
+        assert result.truncated is False
+        assert result.limit_applied is None
+
+
+class TestSearchTransactionsTruncation:
+    """New behavior for fix #1: search_transactions must never silently drop rows —
+    when the match set exceeds the default cap, it must say so via total_matched/
+    truncated/limit_applied rather than returning a partial list that looks complete."""
+
+    @staticmethod
+    def _big_ledger(n: int):
+        import uuid
+        from decimal import Decimal
+
+        from statement_agent.schema import Direction, EconomicType, Transaction
+
+        return [
+            Transaction(
+                transaction_id=str(uuid.uuid4()),
+                document_id="doc_big",
+                transaction_date=date(2025, 7, 1),
+                date_raw="", description_raw="BULK MERCHANT", merchant_raw="BULK MERCHANT",
+                amount=Decimal("10.00"), currency="INR",
+                direction=Direction.DEBIT, economic_type=EconomicType.PURCHASE,
+            )
+            for _ in range(n)
+        ]
+
+    def test_default_limit_truncates_and_discloses_it(self):
+        from statement_agent.agent.tools import DEFAULT_SEARCH_LIMIT
+
+        ledger = self._big_ledger(DEFAULT_SEARCH_LIMIT + 50)
+        result = search_transactions(ledger)
+        assert result.total_matched == DEFAULT_SEARCH_LIMIT + 50
+        assert len(result.results) == DEFAULT_SEARCH_LIMIT
+        assert result.truncated is True
+        assert result.limit_applied == DEFAULT_SEARCH_LIMIT
+
+    def test_under_the_default_limit_is_not_truncated(self):
+        from statement_agent.agent.tools import DEFAULT_SEARCH_LIMIT
+
+        ledger = self._big_ledger(DEFAULT_SEARCH_LIMIT - 10)
+        result = search_transactions(ledger)
+        assert result.total_matched == DEFAULT_SEARCH_LIMIT - 10
+        assert len(result.results) == DEFAULT_SEARCH_LIMIT - 10
+        assert result.truncated is False
+        assert result.limit_applied is None
+
+    def test_explicit_limit_below_default_is_still_disclosed(self):
+        ledger = self._big_ledger(10)
+        result = search_transactions(ledger, limit=3)
+        assert result.total_matched == 10
+        assert len(result.results) == 3
+        assert result.truncated is True
+        assert result.limit_applied == 3
 
 
 class TestSummarizeStatement:

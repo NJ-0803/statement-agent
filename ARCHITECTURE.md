@@ -202,6 +202,23 @@ legitimate same-day repeat purchase is arguably worse than a false positive left
 at — the brief's own framing ("PASS WITH CAVEAT" beats guessing) applies to duplicate resolution as
 much as to spend totals.
 
+**`detect_cross_document_duplicates` is O(n), not O(n²).** The naive version — compare every candidate
+transaction against every other candidate directly — is invisible at this dataset's ~90 transactions
+but infeasible at real scale (100,000 transactions → 5 billion comparisons). Candidates are grouped by
+`(amount, currency, merchant)` first, an O(n) pass; the pairwise date-tolerance check then only runs
+within one small group of transactions that already match on everything else, which stays small even
+in a huge ledger. See `DECISIONS.md` §18 for the scale test (20,000 synthetic transactions, 25 planted
+duplicates, correct and sub-second) and `NOT_IMPLEMENTED.md` §G for what's still deferred at this layer
+(SQL-side filtering, §G's #3).
+
+**Retrieval at scale — the `search_transactions`/`get_sources` cap (§G's #1, `NOT_IMPLEMENTED.md`).**
+Both tools cap results at 200 rows by default and return `total_matched`/`truncated` alongside the
+rows, so a capped result is always disclosed rather than silently looking complete — the same
+incomplete-retrieval failure mode as EC-26 (`EDGE_CASES.md`), just at the tool-result layer instead of
+the filter-logic layer. This protects the *serialized result size*, not the in-memory filtering work
+itself, which is still a full Python scan over `list[Transaction]` — pushing that into SQL is the
+next, deliberately deferred step (§G's #3).
+
 ### 2.5 The ledger (`store.py`)
 
 **What:** SQLite, two tables (`documents`, `transactions`), amounts stored as `TEXT` and parsed back
@@ -299,8 +316,8 @@ retrieval strategy at scale — it is, at any scale, for structured data like th
    model metadata for every document — fine at 7, unwieldy at thousands. Even then, the natural fix is
    more structured filtering (date range, account, filename pattern) over document *metadata*, not
    semantic embedding — the metadata is structured, not prose, so RAG's core justification doesn't
-   apply here either. See `NOT_IMPLEMENTED.md` §G for a related, more urgent context-scaling issue
-   (no default row cap on `search_transactions` at very large transaction counts) that this doesn't cover.
+   apply here either. This is `list_documents` pagination, §G's #4 in `NOT_IMPLEMENTED.md` — still
+   deferred; #1 (the related row-cap issue for `search_transactions`) is built, see §2.4 below.
 2. **If genuinely unstructured free-text content entered the picture** — handwritten margin notes,
    support-chat transcripts about a dispute, narrative contract text — that's a different problem from
    tabular transaction data, and *that's* where a real RAG pipeline (chunking, an embedding model, a
@@ -325,12 +342,12 @@ Everything the model can do is one of these. Nine return data; the tenth ends th
 | `dataset_coverage` | Actual min/max date and currencies in the ledger | Guess at coverage the ledger doesn't have |
 | `resolve_period` | Turns `"last_quarter"`, `"last_month"`, `"2025-Q2"` etc. into exact ISO start/end dates, correctly handling the year-boundary case | Let the model compute a date range by hand |
 | `list_documents` | Every source file, its declared account/currency/period, and any ingest-time `warnings` (security flags, structural anomalies) | Require a bank name to appear as a merchant string to be findable |
-| `search_transactions` | Raw filtered rows, with `sort_by`/`limit` for "the single largest transaction" | Compute any total |
+| `search_transactions` | Raw filtered rows, with `sort_by`/`limit` for "the single largest transaction"; capped at 200 rows by default with `total_matched`/`truncated` disclosed (§2.4) | Compute any total, or silently return a partial result as if it were complete |
 | `aggregate_spending` | The only way to get a spend number — per-currency `verified_total`/`uncertain_total`, optional `group_by`, `possibly_missing_uncategorized_count` when filtered by category, and an optional `convert_to` for a combined multi-currency total (§2.6) | Blend currencies without an explicit `convert_to`, or hide flagged/uncategorized transactions silently |
 | `compare_periods` | Two `aggregate_spending` calls side by side | — |
 | `find_disputable_transactions` | Every duplicate-flagged or anomaly-flagged row across the ledger | Declare anything fraud |
 | `summarize_statement` | Full breakdown for one source file (by currency, by category, flagged count) | — |
-| `get_sources` | Full provenance detail for a specific list of transaction IDs | — |
+| `get_sources` | Full provenance detail for a specific list of transaction IDs; same 200-row cap and disclosure as `search_transactions` | — |
 | `final_answer` | **Terminal.** The only way a turn ends. | Get shown to the user without passing the verifier first |
 
 **Note on the "query → which transactions to pull" abstraction:** there's no separate, serialized
