@@ -37,6 +37,12 @@ wrong" failure mode this whole project is built to avoid. This is the correct th
 the project continues past the 3-day box, and it's the one piece of future work worth calling a
 priority rather than a nice-to-have.
 
+**Live evidence this matters, not just theoretical:** the 95-question red-team eval bank (`DECISIONS.md`
+§19) asked *"Which reimbursement claims can you match to card transactions?"* — the agent reached the
+correct answer, but only after 23 individual tool calls doing brute-force pairwise search, close to
+`MAX_TOOL_ITERATIONS`. Right answer, wrong cost — real confirmation that this gap would bite on a larger
+ledger even though it didn't produce a wrong answer here.
+
 ---
 
 ## B. Extraction robustness gaps with no real fixture to build against
