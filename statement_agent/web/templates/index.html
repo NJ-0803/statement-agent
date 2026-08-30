@@ -311,12 +311,24 @@ uploadGoBtn.addEventListener('click', async () => {
   }
 });
 
+let hasChatHistory = false;
+
 function addUserBubble(text) {
+  hasChatHistory = true;
   const row = el('div', 'row user');
   row.appendChild(el('div', 'bubble-user', escapeHtml(text)));
   chat.appendChild(row);
   chat.scrollTop = chat.scrollHeight;
 }
+
+// Chat history lives only in this page's DOM — nothing is persisted to
+// localStorage or the server, so a refresh silently wipes it. Warn before
+// that happens rather than let the user lose a conversation with no notice.
+window.addEventListener('beforeunload', (e) => {
+  if (!hasChatHistory) return;
+  e.preventDefault();
+  e.returnValue = '';
+});
 
 function addCard(node) {
   const row = el('div', 'row');
