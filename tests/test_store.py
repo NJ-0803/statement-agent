@@ -15,6 +15,15 @@ def _fresh_store():
     return Store(path), path
 
 
+class TestCreatesParentDirectory:
+    def test_nested_nonexistent_directory_is_created(self, tmp_path):
+        nested = tmp_path / "ledgers" / "alice.db"
+        assert not nested.parent.exists()
+        store = Store(str(nested))
+        assert nested.exists()
+        store.close()
+
+
 class TestDecimalRoundTrip:
     def test_amount_survives_round_trip_exactly(self):
         store, path = _fresh_store()

@@ -301,6 +301,17 @@ and updated as two of them got built on explicit direction:
   missing `account_id` concept — but this is a much sharper demonstration of the risk than the original
   16-account finding.
 
+  **Multi-client CLI/config plumbing built instead** (`DECISIONS.md` §31): rather than the `account_id`
+  extension described above — tagging rows within one shared ledger — the direction taken was to keep
+  "one ledger = one person's finances" as a hard invariant and add `--client NAME` (resolved via
+  `clients.json`) as a convenience over pointing `--db` at a separate `.db` file per client. This solves
+  the CLI/config half of a multi-person use case (e.g. a family, or a CA with several clients) without
+  ever blending two people's transactions into the same in-memory ledger — the account-blending bug above
+  cannot recur through this mechanism, by construction. It does **not** solve single-shared-ledger
+  cross-account queries ("total across all my clients") — that would still require the `account_id`
+  extension described above, deliberately not built for the same "unverified against real multi-account
+  data" reason. The web UI has no client-switcher yet — CLI/config only, by explicit direction.
+
 ---
 
 ## Summary: what would change if this continued

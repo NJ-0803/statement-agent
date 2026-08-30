@@ -9,3 +9,5 @@ eval/report.md
 .DS_Store
 uploaded_documents/
 generated_charts/
+clients.json
+ledgers/

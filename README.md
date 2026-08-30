@@ -77,7 +77,7 @@ into the running ledger, instead of only via `cli ingest` from the terminal — 
 python -m pytest tests/ -v
 ```
 
-275 tests, all runnable offline with no API key — they cover normalization (currency/date parsing),
+290 tests, all runnable offline with no API key — they cover normalization (currency/date parsing),
 PDF/CSV extraction (including the injection-defense and duplicate-detection tests described below),
 resolution (categorization, duplicates, reconciliation, anomaly detection), the query/aggregation
 tools, and the answer verifier's grounding/provenance checks. See `DECISIONS.md` §11 for the three real
@@ -170,6 +170,11 @@ runs as part of `pytest tests/` via `tests/test_gold_eval.py`, one test per case
   (`top_n_per_group`), rather than one `search_transactions` call per group — and, only when explicitly
   asked for a "dashboard," combine that with a chart in one inline view in the web UI (never a separate
   page); see `DECISIONS.md` §29.
+- Serve more than one person's finances without ever blending them — `--client NAME` (resolved via a
+  local, gitignored `clients.json`; see `clients.json.example`) points `ingest`/`ask`/`serve` at that
+  client's own separate ledger `.db` file, so two people's transactions are never in the same in-memory
+  ledger. Useful for a family tracking several members separately, or a CA with multiple clients; CLI/config
+  only for now, no web UI switcher yet — see `DECISIONS.md` §31.
 
 ## What it can't do (yet)
 

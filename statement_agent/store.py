@@ -8,6 +8,7 @@ duplicate statement file / re-running ingestion should not double the ledger).
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from datetime import date
 from decimal import Decimal
@@ -79,6 +80,9 @@ def _undec(v) -> Decimal | None:
 class Store:
     def __init__(self, db_path: str):
         self.db_path = db_path
+        parent = os.path.dirname(db_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
         self.conn = sqlite3.connect(db_path)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(_SCHEMA)

@@ -3,6 +3,11 @@
     python -m statement_agent.cli ingest [--folder dataset_public] [--db ledger.db]
     python -m statement_agent.cli ask "What did I spend on dining last quarter?" [--db ledger.db]
     python -m statement_agent.cli ask --interactive [--db ledger.db]
+
+Every subcommand accepts --db PATH directly, or --client NAME to resolve a ledger
+path from clients.json instead (see clients.json.example and DECISIONS.md §31) —
+each client's data lives in its own separate .db file, never blended into one
+shared ledger. `python -m statement_agent.cli clients` lists what's registered.
 """
 
 from __future__ import annotations
@@ -11,14 +16,24 @@ import argparse
 import os
 import sys
 
+from .clients import load_clients, resolve_db_path
 from .ingest.pipeline import ingest_folder
 from .store import Store
 
 
+def _resolve_db_or_exit(args: argparse.Namespace) -> str:
+    try:
+        return resolve_db_path(client=args.client, db=args.db)
+    except ValueError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def _cmd_ingest(args: argparse.Namespace) -> None:
-    if os.path.exists(args.db) and args.fresh:
-        os.remove(args.db)
-    store = Store(args.db)
+    db_path = _resolve_db_or_exit(args)
+    if os.path.exists(db_path) and args.fresh:
+        os.remove(db_path)
+    store = Store(db_path)
     reports = ingest_folder(args.folder, store, attempt_vision=not args.no_vision)
 
     ingested = [r for r in reports if r.status == "ingested"]
@@ -43,7 +58,7 @@ def _cmd_ingest(args: argparse.Namespace) -> None:
         for r in failed:
             print(f"  [FAIL] {r.file_path}: {r.warnings}")
 
-    print(f"\nLedger: {args.db} ({len(store.all_transactions())} total transactions)")
+    print(f"\nLedger: {db_path} ({len(store.all_transactions())} total transactions)")
     store.close()
 
 
@@ -74,14 +89,15 @@ def _print_answer(result) -> None:
 
 
 def _cmd_ask(args: argparse.Namespace) -> None:
+    db_path = _resolve_db_or_exit(args)
     if not os.environ.get("ANTHROPIC_API_KEY"):
         print("ERROR: ANTHROPIC_API_KEY is not set. Add it to .env or export it before running `ask`.", file=sys.stderr)
         sys.exit(1)
-    if not os.path.exists(args.db):
-        print(f"ERROR: no ledger found at {args.db}. Run `ingest` first.", file=sys.stderr)
+    if not os.path.exists(db_path):
+        print(f"ERROR: no ledger found at {db_path}. Run `ingest` first.", file=sys.stderr)
         sys.exit(1)
 
-    store = Store(args.db)
+    store = Store(db_path)
     ledger = store.all_transactions()
     documents = store.all_documents_as_dicts()
     store.close()
@@ -135,16 +151,28 @@ def _print_trace(result) -> None:
 
 
 def _cmd_serve(args: argparse.Namespace) -> None:
+    db_path = _resolve_db_or_exit(args)
     if not os.environ.get("ANTHROPIC_API_KEY"):
         print("WARNING: ANTHROPIC_API_KEY is not set — the UI will load, but questions will fail.", file=sys.stderr)
-    if not os.path.exists(args.db):
-        print(f"WARNING: no ledger found at {args.db}. Run `ingest` first, or the UI will report it's not ready.", file=sys.stderr)
+    if not os.path.exists(db_path):
+        print(f"WARNING: no ledger found at {db_path}. Run `ingest` first, or the UI will report it's not ready.", file=sys.stderr)
 
     from .web.app import create_app
 
-    app = create_app(db_path=args.db)
-    print(f"Serving on http://127.0.0.1:{args.port} (ledger: {args.db})")
+    app = create_app(db_path=db_path)
+    print(f"Serving on http://127.0.0.1:{args.port} (ledger: {db_path})")
     app.run(host="127.0.0.1", port=args.port, debug=False)
+
+
+def _cmd_clients(args: argparse.Namespace) -> None:
+    clients = load_clients()
+    if not clients:
+        print("No clients configured. Create clients.json (see clients.json.example) to register one.")
+        return
+    print(f"{len(clients)} client(s) configured:")
+    for name, db_path in sorted(clients.items()):
+        marker = f" (no ledger yet — run `ingest --client {name}`)" if not os.path.exists(db_path) else ""
+        print(f"  {name} -> {db_path}{marker}")
 
 
 def main() -> None:
@@ -153,26 +181,34 @@ def main() -> None:
 
     p_ingest = sub.add_parser("ingest", help="parse dataset_public/ into a local ledger")
     p_ingest.add_argument("--folder", default="dataset_public")
-    p_ingest.add_argument("--db", default="ledger.db")
+    p_ingest.add_argument("--db", default=None, help="ledger DB path (default: ledger.db)")
+    p_ingest.add_argument("--client", default=None, help="named client from clients.json, instead of --db")
     p_ingest.add_argument("--fresh", action="store_true", help="delete any existing ledger DB before ingesting")
     p_ingest.add_argument("--no-vision", action="store_true", help="skip vision-OCR fallback (useful without API credits)")
     p_ingest.set_defaults(func=_cmd_ingest)
 
     p_ask = sub.add_parser("ask", help="ask a natural-language question against the ledger")
     p_ask.add_argument("question", nargs="?", help="the question to ask (omit with --interactive)")
-    p_ask.add_argument("--db", default="ledger.db")
+    p_ask.add_argument("--db", default=None, help="ledger DB path (default: ledger.db)")
+    p_ask.add_argument("--client", default=None, help="named client from clients.json, instead of --db")
     p_ask.add_argument("--interactive", action="store_true")
     p_ask.add_argument("--trace", action="store_true", help="print the tool-call execution trace")
     p_ask.set_defaults(func=_cmd_ask)
 
     p_serve = sub.add_parser("serve", help="run a small local web UI for asking questions in a browser")
-    p_serve.add_argument("--db", default="ledger.db")
+    p_serve.add_argument("--db", default=None, help="ledger DB path (default: ledger.db)")
+    p_serve.add_argument("--client", default=None, help="named client from clients.json, instead of --db")
     p_serve.add_argument("--port", type=int, default=5050)
     p_serve.set_defaults(func=_cmd_serve)
+
+    p_clients = sub.add_parser("clients", help="list clients registered in clients.json")
+    p_clients.set_defaults(func=_cmd_clients)
 
     args = parser.parse_args()
     if args.command == "ask" and not args.interactive and not args.question:
         parser.error("ask requires a question, or pass --interactive")
+    if getattr(args, "client", None) and getattr(args, "db", None):
+        parser.error("pass either --client or --db, not both")
     args.func(args)
 
 

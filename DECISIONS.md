@@ -1389,3 +1389,49 @@ myself" direction from earlier in this session.
 
 4 new tests (`tests/test_csv_parser.py::TestVerboseHeaderNames`), new fixture
 `tests/fixtures/verbose_header_names.csv`. 275/275 passing.
+
+## 31. Multi-client CLI/config plumbing — one ledger per client, never one shared ledger
+
+Prompted by the account-blending finding in §30 (a dataset with 7,651 distinct cardholders in one file):
+what does it look like if this agent needs to genuinely serve more than one person — e.g. a family
+tracking several members' finances separately, or (the motivating case raised directly) a chartered
+accountant with multiple clients?
+
+Two designs were on the table. **(A) one shared ledger with an `account_id` field** threaded through
+every tool (`aggregate_spending`, `search_transactions`, the verifier, …), so one DB holds many people and
+each query scopes to the active one. **(B) one separate ledger `.db` file per person**, with a thin
+convenience layer for picking which file is active. (A) enables cross-person reporting in one query, but
+it reintroduces exactly the bug §30 just found — it now depends on every tool call being correctly scoped,
+and one missed scope check silently reproduces the blended-total problem, just moved from "forgot to
+filter before ingest" into "forgot to filter in this specific tool call." (B) makes blending structurally
+impossible — two people's transactions are never in the same in-memory ledger to begin with — at the cost
+of no single "across everyone" report without a separate step outside the agent.
+
+Chose (B), and explicitly scoped down to just the CLI/config half for now (the web UI gets no
+client-switcher yet — that stays documented future scope in `NOT_IMPLEMENTED.md`, not built). New
+`statement_agent/clients.py`: `load_clients(config_path)` reads a `clients.json` mapping
+`{"name": "db/path.db"}`, returning `{}` if the file doesn't exist yet (zero clients configured is a
+valid state, not an error); `resolve_db_path(client=, db=)` is the single place `ingest`/`ask`/`serve`
+resolve a `--client NAME` against that config, or fall back to `--db`/the historical `ledger.db` default
+unchanged when `--client` isn't passed — so the existing single-user workflow is untouched byte-for-byte.
+`cli.py` rejects `--client` and `--db` passed together (`parser.error`, exit code 2) rather than silently
+picking one, and a new `clients` subcommand lists what's registered, flagging which named clients don't
+have a ledger yet. `clients.json` (real client→path mappings) and `ledgers/` (the actual per-client `.db`
+files) are both gitignored — same reasoning as `uploaded_documents/`, this is local data, not part of the
+submission; `clients.json.example` ships instead, same pattern as `.env.example`.
+
+A live smoke test against the real repo (not just the isolated test suite) caught a genuine bug the tests
+had papered over: `ingest --client demo_client` with `clients.json` pointing at `ledgers/demo_client.db`
+raised `sqlite3.OperationalError: unable to open database file`, because `Store.__init__` never created
+`ledgers/` and `clients.json` routinely points at a path whose parent directory doesn't exist yet. The
+in-progress unit test had been unknowingly hiding this by manually pre-creating the directory before
+calling `ingest` — worth naming directly: a green test suite had validated the wrong thing. Fixed in
+`store.py` (`os.makedirs(os.path.dirname(db_path), exist_ok=True)` before `sqlite3.connect`, general to
+any nested db path, not client-specific), the test corrected to no longer pre-create the directory, and a
+dedicated regression test added directly against `Store`. Then re-ran the same live smoke test end to end:
+ingest into a fresh nested path succeeded, `clients` correctly reported the ledger now exists, the default
+`ledger.db` was untouched throughout, and both the `--client`+`--db` conflict and an unknown client name
+produced clean one-line errors rather than a stack trace.
+
+15 new tests (`tests/test_clients.py`, `tests/test_cli.py`, one new `Store` test in `tests/test_store.py`).
+290/290 passing.

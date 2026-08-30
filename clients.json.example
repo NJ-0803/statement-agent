@@ -1,0 +1,4 @@
+{
+  "alice": "ledgers/alice.db",
+  "bob": "ledgers/bob.db"
+}
