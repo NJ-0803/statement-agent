@@ -34,6 +34,13 @@ must come from calling a tool (aggregate_spending, compare_periods, summarize_st
 from mental arithmetic over search_transactions results. If you need a number, call the aggregation \
 tool that produces it directly.
 
+2c. This still applies to simple derived values, not just totals — e.g. "the average of my highest and \
+lowest transaction." Never compute this yourself just because it looks trivial: call compute with the \
+values you already retrieved (values must be copied exactly from what a prior tool call this turn \
+actually returned, never estimated). If a question needs "the transaction closest to" a value, get that \
+value first (directly, or via compute), then call search_transactions with sort_by="closest_to_amount" \
+and that target_amount — never eyeball which row looks closest.
+
 2a. When a question's own wording already picks one clear interpretation (e.g. "what's my highest \
 TRANSACTION" unambiguously means a single transaction, not a merchant or category total), answer \
 that interpretation directly and with reasoning — state which transaction it is, its amount, date, and \

@@ -69,7 +69,10 @@ TOOL_SCHEMAS = [
             "(each row's extraction_sequence), not sorted by any transaction field — use this, never "
             "date_asc, to answer a question about the document's own row/date ordering (e.g. 'is this "
             "statement sorted by date?'). Sorting by date and then checking if the result is sorted by "
-            "date is circular and proves nothing about the source document."
+            "date is circular and proves nothing about the source document. "
+            "sort_by='closest_to_amount' (with target_amount set, typically from a prior `compute` call) "
+            "finds the transaction(s) nearest a target value — e.g. 'which transaction is closest to my "
+            "average spend' after computing that average."
         ),
         "input_schema": {
             "type": "object",
@@ -81,9 +84,31 @@ TOOL_SCHEMAS = [
                 "merchant_contains": {"type": "string"},
                 "currency": {"type": "string"},
                 "include_flagged": {"type": "boolean", "description": "include duplicate-flagged/implausible-date rows (default true)"},
-                "sort_by": {"type": "string", "enum": ["amount_desc", "amount_asc", "date_desc", "date_asc", "extraction_order"]},
+                "sort_by": {"type": "string", "enum": ["amount_desc", "amount_asc", "date_desc", "date_asc", "extraction_order", "closest_to_amount"]},
+                "target_amount": {"type": "string", "description": "required for sort_by='closest_to_amount' — the value to sort by proximity to, as a decimal string"},
                 "limit": {"type": "integer", "description": "max rows to return, applied after sorting"},
             },
+        },
+    },
+    {
+        "name": "compute",
+        "description": (
+            "Deterministic arithmetic over numbers you ALREADY have from another tool call this turn — "
+            "average, sum, difference, min, or max. NEVER a substitute for aggregate_spending (which "
+            "remains the only way to compute a spend total) — this is for a simple derived value from "
+            "numbers you've already retrieved, e.g. the average of a highest and lowest transaction "
+            "amount you got from search_transactions. Always use this instead of doing the arithmetic "
+            "yourself — the result is a real tool output, so it's grounded the same way every other "
+            "number in your answer must be. 'difference' takes exactly 2 values and computes "
+            "values[0] - values[1] (order matters)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "operation": {"type": "string", "enum": ["average", "sum", "difference", "min", "max"]},
+                "values": {"type": "array", "items": {"type": "string"}, "description": "decimal strings, copied exactly from a prior tool result"},
+            },
+            "required": ["operation", "values"],
         },
     },
     {
@@ -257,8 +282,11 @@ def _dispatch(tool_name: str, tool_input: dict, ledger: list[Transaction], docum
             currency=tool_input.get("currency"),
             include_flagged=tool_input.get("include_flagged", True),
             sort_by=tool_input.get("sort_by"),
+            target_amount=tool_input.get("target_amount"),
             limit=tool_input.get("limit"),
         )
+    if tool_name == "compute":
+        return T.compute(tool_input["operation"], tool_input["values"])
     if tool_name == "aggregate_spending":
         return T.aggregate_spending(
             ledger,

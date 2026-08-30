@@ -19,7 +19,7 @@ import calendar
 import re
 from dataclasses import dataclass, field
 from datetime import date, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from ..normalize import DocumentDateResolver
 from ..schema import Direction, EconomicType, Transaction
@@ -117,7 +117,8 @@ def search_transactions(
     merchant_contains: str | None = None,
     currency: str | None = None,
     include_flagged: bool = True,
-    sort_by: str | None = None,  # "amount_desc" | "amount_asc" | "date_desc" | "date_asc" | "extraction_order"
+    sort_by: str | None = None,  # "amount_desc" | "amount_asc" | "date_desc" | "date_asc" | "extraction_order" | "closest_to_amount"
+    target_amount: str | None = None,  # required for sort_by="closest_to_amount"
     limit: int | None = None,
 ) -> SearchResult:
     """`sort_by`/`limit` exist so a question like 'what's my single biggest expense'
@@ -132,6 +133,11 @@ def search_transactions(
     re-sorting by date and then checking if the result is sorted by date is circular
     and proves nothing about the source; compare extraction_order against the dates
     it returns instead.
+
+    `sort_by="closest_to_amount"` (with `target_amount` set) sorts by absolute distance
+    from a target value — e.g. combined with `limit=1` and a `target_amount` obtained
+    from `compute`, this answers "which transaction is closest to X" deterministically,
+    the same way amount_desc+limit=1 answers "which is the biggest."
 
     Returns a SearchResult, not a bare list — `total_matched` and `truncated` let
     the caller (and the verifier/prompt policy) know when a result is a capped
@@ -165,6 +171,12 @@ def search_transactions(
         matched.sort(key=lambda t: t.transaction_date or date.min)
     elif sort_by == "extraction_order":
         matched.sort(key=lambda t: t.extraction_sequence if t.extraction_sequence is not None else -1)
+    elif sort_by == "closest_to_amount" and target_amount is not None:
+        try:
+            target = Decimal(str(target_amount))
+            matched.sort(key=lambda t: abs(t.amount - target))
+        except (InvalidOperation, TypeError, ValueError):
+            pass  # invalid target_amount — same lenient no-op as any other inapplicable sort_by above
 
     total_matched = len(matched)
     effective_limit = limit if limit is not None else DEFAULT_SEARCH_LIMIT
@@ -177,6 +189,57 @@ def search_transactions(
         truncated=truncated,
         limit_applied=effective_limit if (truncated or limit is not None) else None,
     )
+
+
+_COMPUTE_OPERATIONS = {"average", "sum", "difference", "min", "max"}
+
+
+def compute(operation: str, values: list[str]) -> dict:
+    """Deterministic arithmetic over numbers the model ALREADY has — never a general
+    calculator for numbers it invents itself. Exists so a question needing a simple
+    derived value (e.g. "the average of my highest and lowest transaction") doesn't
+    force a choice between mental math (forbidden by rule 2) or refusing to answer a
+    legitimately computable question. Critically, this doesn't loosen the "every number
+    must come from a tool" guarantee — it strengthens it: the result is itself a real
+    tool output, so it's automatically covered by the same grounding check every other
+    number in this system already goes through, the same way resolve_period exists so
+    the model never computes a date range by hand instead of doing arithmetic itself.
+
+    Supported operations: average, sum, min, max (any number of values), and
+    difference (values[0] - values[1], exactly 2 values only — order matters).
+    """
+    op = (operation or "").lower()
+    if op not in _COMPUTE_OPERATIONS:
+        return {"error": f"unrecognized operation {operation!r} (expected one of {sorted(_COMPUTE_OPERATIONS)})"}
+
+    parsed: list[Decimal] = []
+    for v in values or []:
+        try:
+            parsed.append(Decimal(str(v)))
+        except (InvalidOperation, TypeError, ValueError):
+            return {"error": f"{v!r} is not a valid number"}
+
+    if not parsed:
+        return {"error": "no values provided"}
+    if op == "difference" and len(parsed) != 2:
+        return {"error": "difference requires exactly 2 values (values[0] - values[1])"}
+
+    if op == "average":
+        result = sum(parsed) / len(parsed)
+    elif op == "sum":
+        result = sum(parsed)
+    elif op == "difference":
+        result = parsed[0] - parsed[1]
+    elif op == "min":
+        result = min(parsed)
+    else:  # "max"
+        result = max(parsed)
+
+    return {
+        "operation": op,
+        "input_values": [str(v) for v in parsed],
+        "result": str(result),
+    }
 
 
 @dataclass

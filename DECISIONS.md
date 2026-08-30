@@ -1194,3 +1194,43 @@ ingested end-to-end (bootstrapping a ledger that didn't exist yet), the same fil
 correctly reported as `skipped_duplicate` rather than double-counted, an unsupported file type reported
 rather than dropped, and the path-traversal filename test above. 228/228 passing at the point this was
 added (later 235/235 once §25's fixes were layered on top).
+
+---
+
+## 27. `compute` and `closest_to_amount` — a real capability gap, not a bug
+
+Live-tested question against the single-account Kaggle ledger (§25): *"Which date is nearest to the
+average of the highest and lowest transaction?"* The agent correctly **refused** rather than fabricated —
+found the highest and lowest transactions via `search_transactions`, then explained precisely why it
+couldn't go further: averaging them itself would be exactly the mental-math rule 2 forbids, and there was
+no tool to search by "closest amount to a target value" even if it had the average. Not a bug — the trust
+architecture working as designed. But it exposed two narrow, real, worth-closing gaps rather than one
+overly-exotic edge case.
+
+**Built deliberately narrow, not a general calculator.** A generic "let the model compute anything" tool
+would undermine the exact guarantee rule 2 exists to provide. The actual design: `compute`'s inputs must
+be values the model already retrieved from another tool call this turn — its *output* is itself a real
+tool result, so it's automatically covered by the same grounding check (`verifier.py`) every other number
+already goes through, the same reasoning `resolve_period`/`resolve_date` already established for dates.
+This doesn't loosen "every number comes from a tool" — it gives the model a correct way to satisfy it for
+values that are legitimately derived, not just directly retrieved.
+
+- **`compute(operation, values)`** (`tools.py`) — `average`/`sum`/`min`/`max` (any count) and `difference`
+  (exactly 2, ordered: `values[0] - values[1]`). Invalid input (unparseable number, wrong count for
+  `difference`, unrecognized operation) returns `{"error": ...}`, matching the existing convention
+  (`resolve_period` does the same for a bad period string) rather than raising.
+- **`search_transactions(sort_by="closest_to_amount", target_amount=...)`** — sorts by absolute distance
+  from a target value. Missing/invalid `target_amount` is a lenient no-op, consistent with how every
+  other inapplicable `sort_by` value already behaves (no error, just no sort applied).
+- New prompt rule 2c makes the connection explicit: rule 2's "never do mental math" applies to simple
+  derived values too, not just totals — use `compute`, never eyeball which row "looks closest."
+
+**Live-verified end to end, the exact original question, unmodified:** the agent's real tool sequence was
+`dataset_coverage` → `search_transactions(amount_desc, limit=1)` → `search_transactions(amount_asc,
+limit=1)` → `compute(average, [223542.64, 23.26])` → `search_transactions(closest_to_amount,
+target_amount=111782.95, limit=1)` — fully grounded, correct outlier and ambiguous-date caveats attached,
+all four amounts in the final answer traceable to a real tool call this turn.
+
+12 new tests (`tests/test_tools.py::TestCompute`, plus two in `TestSortAndLimit` for `closest_to_amount`,
+including one that independently re-derives the minimum distance across the whole ledger rather than just
+checking "some result came back"). 247/247 passing.

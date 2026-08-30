@@ -6,6 +6,7 @@ from decimal import Decimal
 from statement_agent.agent.tools import (
     aggregate_spending,
     compare_periods,
+    compute,
     dataset_coverage,
     find_disputable_transactions,
     list_documents,
@@ -358,6 +359,80 @@ class TestSortAndLimit:
         # date_asc is trivially always sorted by date — that's the whole bug. The real
         # question is whether extraction_order matches it, and here it must not.
         assert [t.date for t in by_extraction] != [t.date for t in by_date]
+
+    def test_closest_to_amount_finds_the_nearest_transaction(self):
+        # real case this exists for: "which transaction is closest to the average of my
+        # highest and lowest" — sort_by=amount_desc/asc find the extremes, compute()
+        # finds the midpoint, and this finds the transaction nearest that midpoint
+        ledger = _ledger()
+        highest = search_transactions(ledger, sort_by="amount_desc", limit=1).results[0]
+        lowest = search_transactions(ledger, sort_by="amount_asc", limit=1).results[0]
+        midpoint = compute("average", [highest.amount, lowest.amount])["result"]
+
+        closest = search_transactions(ledger, sort_by="closest_to_amount", target_amount=midpoint, limit=1).results
+        assert len(closest) == 1
+        # the closest transaction's distance from the midpoint must be <= every other
+        # transaction's distance — verified independently, not just "some result came back"
+        from decimal import Decimal
+
+        target = Decimal(midpoint)
+        closest_distance = abs(Decimal(closest[0].amount) - target)
+        all_distances = [abs(Decimal(t.amount) - target) for t in search_transactions(ledger).results]
+        assert closest_distance == min(all_distances)
+
+    def test_closest_to_amount_without_a_target_is_a_lenient_noop(self):
+        # missing/invalid target_amount must not crash — same lenient no-op as any
+        # other inapplicable sort_by
+        ledger = _ledger()
+        result = search_transactions(ledger, sort_by="closest_to_amount")
+        assert result.total_matched == len(ledger)
+
+
+class TestCompute:
+    """New tool: deterministic arithmetic over numbers the model already has, so a
+    simple derived value (an average, a difference) never has to be either mental
+    math (forbidden) or an unanswerable question."""
+
+    def test_average_of_two_values(self):
+        assert compute("average", ["10", "20"])["result"] == "15"
+
+    def test_average_of_several_values(self):
+        # Decimal division preserves the inputs' precision rather than normalizing it
+        # away — "20.00", not "20", consistent with how money is represented everywhere
+        # else in this system (never silently reformatted)
+        result = compute("average", ["10.00", "20.00", "30.00"])
+        assert result["result"] == "20.00"
+
+    def test_sum(self):
+        assert compute("sum", ["10.50", "20.25"])["result"] == "30.75"
+
+    def test_difference_is_ordered_not_absolute(self):
+        assert compute("difference", ["30", "10"])["result"] == "20"
+        assert compute("difference", ["10", "30"])["result"] == "-20"
+
+    def test_difference_requires_exactly_two_values(self):
+        result = compute("difference", ["10", "20", "30"])
+        assert "error" in result
+
+    def test_min_and_max(self):
+        assert compute("min", ["30", "10", "20"])["result"] == "10"
+        assert compute("max", ["30", "10", "20"])["result"] == "30"
+
+    def test_invalid_number_returns_error_not_a_crash(self):
+        result = compute("average", ["10", "not a number"])
+        assert "error" in result
+
+    def test_unrecognized_operation_returns_error(self):
+        result = compute("multiply", ["10", "20"])
+        assert "error" in result
+
+    def test_no_values_returns_error(self):
+        result = compute("average", [])
+        assert "error" in result
+
+    def test_input_values_are_echoed_back_for_traceability(self):
+        result = compute("average", ["10", "20"])
+        assert result["input_values"] == ["10", "20"]
 
 
 class TestSearchTransactionsTruncation:

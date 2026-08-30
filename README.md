@@ -77,7 +77,7 @@ into the running ledger, instead of only via `cli ingest` from the terminal — 
 python -m pytest tests/ -v
 ```
 
-235 tests, all runnable offline with no API key — they cover normalization (currency/date parsing),
+247 tests, all runnable offline with no API key — they cover normalization (currency/date parsing),
 PDF/CSV extraction (including the injection-defense and duplicate-detection tests described below),
 resolution (categorization, duplicates, reconciliation, anomaly detection), the query/aggregation
 tools, and the answer verifier's grounding/provenance checks. See `DECISIONS.md` §11 for the three real
@@ -158,6 +158,10 @@ runs as part of `pytest tests/` via `tests/test_gold_eval.py`, one test per case
 - Check specific decimal figures stated in the answer's own prose (a statistical threshold, a percentage),
   not just the structured "verified" numbers — found live that a plausible-sounding number in free text
   passed verification purely by coincidence, since nothing had ever checked it; see `DECISIONS.md` §22.
+- Answer questions needing a simple derived value (e.g. "the transaction closest to the average of my
+  highest and lowest") deterministically — a `compute` tool for arithmetic over numbers already retrieved
+  this turn, paired with `search_transactions(sort_by="closest_to_amount")`, rather than either doing the
+  math itself or refusing a legitimately answerable question; see `DECISIONS.md` §27.
 
 ## What it can't do (yet)
 

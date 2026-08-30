@@ -369,9 +369,9 @@ sheets) is fundamentally tabular once extracted, so it gets a tabular retrieval 
 
 ## 4. The agent loop and tool calls — what actually happens when you ask a question
 
-### 4.1 The eleven tools
+### 4.1 The twelve tools
 
-Everything the model can do is one of these. Ten return data; the eleventh ends the turn.
+Everything the model can do is one of these. Eleven return data; the twelfth ends the turn.
 
 | Tool | Purpose | Never does |
 |---|---|---|
@@ -379,9 +379,10 @@ Everything the model can do is one of these. Ten return data; the eleventh ends 
 | `resolve_period` | Turns `"last_quarter"`, `"last_month"`, `"2025-Q2"` etc. into exact ISO start/end dates, correctly handling the year-boundary case | Let the model compute a date range by hand |
 | `resolve_date` | Resolves ONE raw date string the same way ambiguous document dates are resolved at ingestion (§2.4) — flags `assumption`/`confidence<1.0` when a DD/MM-vs-MM/DD guess was needed | Let the model silently guess which convention a date like "05/07/2026" uses |
 | `list_documents` | Every source file, its declared account/currency/period, and any ingest-time `warnings` (security flags, structural anomalies) | Require a bank name to appear as a merchant string to be findable |
-| `search_transactions` | Raw filtered rows, with `sort_by`/`limit` for "the single largest transaction"; capped at 200 rows by default with `total_matched`/`truncated` disclosed (§2.4); `sort_by="extraction_order"` returns the document's real original row order for "is this statement sorted?"-type questions (§2.4) | Compute any total, silently return a partial result as if it were complete, or answer a document-ordering question by re-sorting the results and checking the sort |
+| `search_transactions` | Raw filtered rows, with `sort_by`/`limit` for "the single largest transaction"; capped at 200 rows by default with `total_matched`/`truncated` disclosed (§2.4); `sort_by="extraction_order"` returns the document's real original row order for "is this statement sorted?"-type questions (§2.4); `sort_by="closest_to_amount"` finds the transaction nearest a target value (e.g. a `compute`d average) | Compute any total, silently return a partial result as if it were complete, answer a document-ordering question by re-sorting and checking the sort, or eyeball which row "looks closest" to a value |
 | `aggregate_spending` | The only way to get a spend number — per-currency `verified_total`/`uncertain_total`, optional `group_by`, `possibly_missing_uncategorized_count` when filtered by category, and an optional `convert_to` for a combined multi-currency total (§2.6) | Blend currencies without an explicit `convert_to`, or hide flagged/uncategorized transactions silently |
 | `compare_periods` | Two `aggregate_spending` calls side by side | — |
+| `compute` | Deterministic arithmetic (average/sum/difference/min/max) over values the model already retrieved this turn — its result is a real tool output, grounded the same way every other number is (§4.2) | Let the model do even simple derived-value math itself, or be a general calculator for numbers it invented |
 | `find_disputable_transactions` | Every duplicate-flagged or anomaly-flagged row across the ledger | Declare anything fraud |
 | `summarize_statement` | Full breakdown for one source file (by currency, by category, flagged count) | — |
 | `get_sources` | Full provenance detail for a specific list of transaction IDs; same 200-row cap and disclosure as `search_transactions` | — |
