@@ -166,6 +166,25 @@ def create_app(db_path: str = "ledger.db", *, upload_dir: str = UPLOAD_DIR) -> F
             return jsonify({"error": f"{type(e).__name__}: {e}"}), 500
 
         fa = result.final_answer
+
+        # A generate_chart call leaves a real PNG on disk (see agent/tools.py) — read
+        # and embed it as a data URI so the browser can render it inline. Only the last
+        # chart is sent (a turn producing several is unlikely, and this keeps the
+        # response bounded); any read failure is swallowed rather than failing the
+        # whole answer, since the text answer is still valid without the image.
+        chart_image = None
+        for record in result.trace:
+            if record.tool_name == "generate_chart" and isinstance(record.tool_result, dict):
+                chart_path = record.tool_result.get("chart_path")
+                if chart_path and os.path.exists(chart_path):
+                    try:
+                        import base64
+
+                        with open(chart_path, "rb") as f:
+                            chart_image = "data:image/png;base64," + base64.b64encode(f.read()).decode("ascii")
+                    except OSError:
+                        chart_image = None
+
         return jsonify({
             "status": result.verification.status,
             "answer_text": fa.answer_text,
@@ -175,6 +194,7 @@ def create_app(db_path: str = "ledger.db", *, upload_dir: str = UPLOAD_DIR) -> F
             "verification_passed": result.verification.passed,
             "verification_failures": result.verification.failures,
             "trace": [{"tool": r.tool_name, "input": r.tool_input} for r in result.trace],
+            "chart_image": chart_image,
         })
 
     return app

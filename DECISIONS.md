@@ -1234,3 +1234,61 @@ all four amounts in the final answer traceable to a real tool call this turn.
 12 new tests (`tests/test_tools.py::TestCompute`, plus two in `TestSortAndLimit` for `closest_to_amount`,
 including one that independently re-derives the minimum distance across the whole ledger rather than just
 checking "some result came back"). 247/247 passing.
+
+---
+
+## 28. `generate_chart` — visualization, without a second aggregation path
+
+Explicit request: add a visualization library so the agent can show or read data graphically. Built as a
+new tool (`matplotlib`, pinned `3.11.1` in `requirements.txt`) rather than a separate feature bolted onto
+the side, following the same principle every other tool in this system already follows.
+
+**Never a second way to compute a number.** `generate_chart` calls `aggregate_spending` internally for its
+data — the exact same grouped totals (by month/category/merchant) every other spend-total question already
+uses — and only renders what that call returns. The model picks `chart_type` (bar/line/pie) and `group_by`;
+turning those already-grounded numbers into pixels is 100% deterministic matplotlib code, not a new kind of
+claim. `tests/test_tools.py::TestGenerateChart::test_data_matches_aggregate_spending_exactly` asserts this
+directly — the chart's `data` field is checked byte-for-byte against a separate `aggregate_spending` call,
+not just "some chart was produced."
+
+**Never blends currencies, same as every other aggregate.** If the matched transactions span more than one
+currency and `currency` wasn't passed to scope the chart, it returns an error rather than plotting bars/
+slices denominated in different currencies side by side — the same discipline as `aggregate_spending`
+never combining INR and USD into one number.
+
+**A defensive guard that can't currently be triggered through the real tool chain, tested anyway.** A pie
+chart can't meaningfully represent a negative value. Every amount in this system is stored as a positive
+magnitude (direction/economic_type carry the sign meaning), so `aggregate_spending`'s own output can't
+actually produce a negative group total today — but the guard exists for when that invariant might not
+hold (a future economic type, an extension), so `tests/test_tools.py`'s
+`test_pie_chart_rejects_negative_values` verifies it directly via a monkeypatched `aggregate_spending`
+return value, rather than leaving currently-dead-in-practice code unverified.
+
+**Non-interactive backend explicitly, since this never has a display.** `matplotlib.use("Agg")` before
+importing `pyplot` — this runs headless, in a CLI process or a Flask server, never with a GUI. Each figure
+is explicitly `plt.close()`d after saving, which matters in a long-running server (the web UI) more than a
+one-shot CLI call, to avoid accumulating open figures in memory across many chart requests.
+
+**Wired into both front ends.** `cli.py` detects a `generate_chart` call in the trace and prints
+`Chart saved to: <path>` after the answer. `web/app.py`'s `/api/ask` reads the PNG and embeds it as a
+`data:image/png;base64,...` URI in the JSON response (swallowing a read failure rather than failing the
+whole answer, since the text answer is still valid without the image); the frontend renders it as an
+`<img>` tag inline in the chat. New prompt rule 2d tells the model to reach for this on "show"/"chart"/
+"visualize"/"plot"/"graph" language, and to still state the actual numbers in words — a chart is additional,
+never a replacement for the verified figures, since not every surface can display an image.
+
+**Live-verified end to end, and the model handled the interesting case better than the minimum bar:**
+asked *"Show me a chart of my spending by category"* against the real dataset (which spans INR and USD) —
+rather than hitting the multi-currency error at all, the model proactively checked `dataset_coverage`,
+recognized the split itself, and generated *two* separate bar charts (one per currency), captioned and
+labeled correctly, with the existing uncategorized-spend floor caveat (rule 6a) still attached. Both PNGs
+verified as real, valid 800×500 images (`file` command), one visually inspected directly.
+
+`generated_charts/` added to `.gitignore` alongside `uploaded_documents/`/`*.db` — same reasoning: this
+directory holds generated output from a user's own data, not something to commit.
+
+12 new tests (`tests/test_tools.py::TestGenerateChart`: real PNG creation for all three chart types, data
+correctness against `aggregate_spending`, the multi-currency error and its resolution via scoping,
+unrecognized `chart_type`/`group_by`, no-matching-data, and the negative-value guard) plus 2 in
+`tests/test_web.py::TestChartImageEmbedding` (a real generated chart correctly base64-embedded; no chart
+call correctly means no `chart_image`). 259/259 passing.

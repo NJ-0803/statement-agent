@@ -159,6 +159,31 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "name": "generate_chart",
+        "description": (
+            "Renders a chart (bar/line/pie) from the SAME grouped totals aggregate_spending computes — "
+            "use this when the user asks to 'show', 'chart', 'visualize', 'plot', or 'graph' spending, "
+            "instead of only describing numbers in prose. Returns `chart_path` (a PNG file on disk — "
+            "mention it exists so the user can view it) and `data` (the exact values plotted, so you can "
+            "also describe them in words). Never blends currencies into one chart — if the matched "
+            "transactions span more than one currency, pass `currency` to scope it, or you'll get an "
+            "error explaining why. 'month' groups chronologically; 'category'/'merchant' alphabetically."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "chart_type": {"type": "string", "enum": ["bar", "line", "pie"]},
+                "group_by": {"type": "string", "enum": ["month", "category", "merchant"]},
+                "category": {"type": "string", "enum": _CATEGORY_ENUM},
+                "date_from": {"type": "string", "description": "ISO date YYYY-MM-DD"},
+                "date_to": {"type": "string", "description": "ISO date YYYY-MM-DD"},
+                "currency": {"type": "string"},
+                "title": {"type": "string"},
+            },
+            "required": ["chart_type", "group_by"],
+        },
+    },
+    {
         "name": "find_disputable_transactions",
         "description": "Returns transactions flagged as possible duplicates, statistical outliers, or implausible dates — for 'anything I should dispute/review' questions.",
         "input_schema": {"type": "object", "properties": {}},
@@ -305,6 +330,17 @@ def _dispatch(tool_name: str, tool_input: dict, ledger: list[Transaction], docum
             currency=tool_input.get("currency"),
             period_a=(_parse_date(tool_input["period_a_start"]), _parse_date(tool_input["period_a_end"])),
             period_b=(_parse_date(tool_input["period_b_start"]), _parse_date(tool_input["period_b_end"])),
+        )
+    if tool_name == "generate_chart":
+        return T.generate_chart(
+            ledger,
+            chart_type=tool_input["chart_type"],
+            group_by=tool_input["group_by"],
+            category=tool_input.get("category"),
+            date_from=_parse_date(tool_input.get("date_from")),
+            date_to=_parse_date(tool_input.get("date_to")),
+            currency=tool_input.get("currency"),
+            title=tool_input.get("title"),
         )
     if tool_name == "find_disputable_transactions":
         return T.find_disputable_transactions(ledger)

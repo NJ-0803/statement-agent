@@ -3,12 +3,15 @@ import tempfile
 from datetime import date
 from decimal import Decimal
 
+import pytest
+
 from statement_agent.agent.tools import (
     aggregate_spending,
     compare_periods,
     compute,
     dataset_coverage,
     find_disputable_transactions,
+    generate_chart,
     list_documents,
     search_transactions,
     summarize_statement,
@@ -433,6 +436,97 @@ class TestCompute:
     def test_input_values_are_echoed_back_for_traceability(self):
         result = compute("average", ["10", "20"])
         assert result["input_values"] == ["10", "20"]
+
+
+class TestGenerateChart:
+    """generate_chart renders the SAME grouped totals aggregate_spending computes —
+    it must never introduce a second aggregation path, and must never blend
+    currencies into one chart any more than aggregate_spending does."""
+
+    @pytest.fixture(autouse=True)
+    def _use_tmp_charts_dir(self, tmp_path, monkeypatch):
+        import statement_agent.agent.tools as tools_module
+
+        monkeypatch.setattr(tools_module, "_CHARTS_DIR", str(tmp_path / "charts"))
+
+    def test_bar_chart_creates_a_real_png_file(self):
+        ledger = _ledger()
+        result = generate_chart(ledger, chart_type="bar", group_by="category", currency="INR")
+        assert "error" not in result
+        assert os.path.exists(result["chart_path"])
+        assert os.path.getsize(result["chart_path"]) > 0
+
+    def test_line_chart_grouped_by_month(self):
+        ledger = _ledger()
+        result = generate_chart(ledger, chart_type="line", group_by="month", currency="INR")
+        assert "error" not in result
+        assert os.path.exists(result["chart_path"])
+
+    def test_pie_chart_grouped_by_merchant(self):
+        ledger = _ledger()
+        result = generate_chart(ledger, chart_type="pie", group_by="merchant", currency="INR")
+        assert "error" not in result
+        assert os.path.exists(result["chart_path"])
+
+    def test_data_matches_aggregate_spending_exactly(self):
+        # the chart must never compute its own numbers — cross-check against the
+        # same aggregate_spending call it's supposed to be reusing internally
+        ledger = _ledger()
+        result = generate_chart(ledger, chart_type="bar", group_by="category", currency="INR")
+        expected = aggregate_spending(ledger, currency="INR", group_by="category").group_breakdown
+        for label, total in result["data"].items():
+            assert total == expected[label]["INR"]
+
+    def test_multi_currency_without_scoping_returns_an_error_not_a_blended_chart(self):
+        ledger = _ledger()  # real dataset has both INR and USD
+        result = generate_chart(ledger, chart_type="bar", group_by="category")
+        assert "error" in result
+        assert "currenc" in result["error"].lower()
+
+    def test_scoping_to_one_currency_resolves_the_multi_currency_case(self):
+        ledger = _ledger()
+        result = generate_chart(ledger, chart_type="bar", group_by="category", currency="USD")
+        assert "error" not in result
+        assert result["currency"] == "USD"
+
+    def test_unrecognized_chart_type_returns_error(self):
+        ledger = _ledger()
+        result = generate_chart(ledger, chart_type="scatter", group_by="category", currency="INR")
+        assert "error" in result
+
+    def test_unrecognized_group_by_returns_error(self):
+        ledger = _ledger()
+        result = generate_chart(ledger, chart_type="bar", group_by="account", currency="INR")
+        assert "error" in result
+
+    def test_no_matching_transactions_returns_error_not_an_empty_chart(self):
+        ledger = _ledger()
+        result = generate_chart(
+            ledger, chart_type="bar", group_by="category", currency="INR",
+            date_from=date(2099, 1, 1), date_to=date(2099, 12, 31),
+        )
+        assert "error" in result
+
+    def test_pie_chart_rejects_negative_values(self, monkeypatch):
+        # amounts are always positive magnitudes throughout this system in practice, so
+        # a negative group total can't actually arise from real aggregate_spending output
+        # today — this guard is defensive. Test it directly by monkeypatching
+        # aggregate_spending's return value, rather than skip testing dead-in-practice
+        # code or leave the guard unverified.
+        import statement_agent.agent.tools as tools_module
+        from statement_agent.agent.tools import AggregateResult, CurrencyTotal
+
+        fake_result = AggregateResult(
+            by_currency={"INR": CurrencyTotal(verified_total="50.00", uncertain_total="0", verified_count=2, uncertain_count=0)},
+            verified_transaction_ids=[],
+            uncertain_transaction_ids=[],
+            group_breakdown={"Dining": {"INR": "-50.00"}, "Groceries": {"INR": "100.00"}},
+        )
+        monkeypatch.setattr(tools_module, "aggregate_spending", lambda *a, **kw: fake_result)
+
+        result = generate_chart([], chart_type="pie", group_by="category", currency="INR")
+        assert "error" in result
+        assert "negative" in result["error"].lower()
 
 
 class TestSearchTransactionsTruncation:

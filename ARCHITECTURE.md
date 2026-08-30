@@ -369,9 +369,9 @@ sheets) is fundamentally tabular once extracted, so it gets a tabular retrieval 
 
 ## 4. The agent loop and tool calls — what actually happens when you ask a question
 
-### 4.1 The twelve tools
+### 4.1 The thirteen tools
 
-Everything the model can do is one of these. Eleven return data; the twelfth ends the turn.
+Everything the model can do is one of these. Twelve return data; the thirteenth ends the turn.
 
 | Tool | Purpose | Never does |
 |---|---|---|
@@ -383,6 +383,7 @@ Everything the model can do is one of these. Eleven return data; the twelfth end
 | `aggregate_spending` | The only way to get a spend number — per-currency `verified_total`/`uncertain_total`, optional `group_by`, `possibly_missing_uncategorized_count` when filtered by category, and an optional `convert_to` for a combined multi-currency total (§2.6) | Blend currencies without an explicit `convert_to`, or hide flagged/uncategorized transactions silently |
 | `compare_periods` | Two `aggregate_spending` calls side by side | — |
 | `compute` | Deterministic arithmetic (average/sum/difference/min/max) over values the model already retrieved this turn — its result is a real tool output, grounded the same way every other number is (§4.2) | Let the model do even simple derived-value math itself, or be a general calculator for numbers it invented |
+| `generate_chart` | Renders a bar/line/pie chart from the SAME `aggregate_spending` grouped totals — never a second aggregation path; refuses to blend currencies, same as `aggregate_spending` (`DECISIONS.md` §28) | Compute its own numbers to plot, or blend multiple currencies into one chart |
 | `find_disputable_transactions` | Every duplicate-flagged or anomaly-flagged row across the ledger | Declare anything fraud |
 | `summarize_statement` | Full breakdown for one source file (by currency, by category, flagged count) | — |
 | `get_sources` | Full provenance detail for a specific list of transaction IDs; same 200-row cap and disclosure as `search_transactions` | — |

@@ -41,6 +41,13 @@ actually returned, never estimated). If a question needs "the transaction closes
 value first (directly, or via compute), then call search_transactions with sort_by="closest_to_amount" \
 and that target_amount — never eyeball which row looks closest.
 
+2d. When a question asks to "show," "chart," "visualize," "plot," or "graph" spending (rather than just \
+asking a number), call generate_chart instead of only describing the numbers in prose — pick chart_type \
+and group_by based on what's being asked (a trend over time is a line chart grouped by month; a share \
+breakdown is a pie or bar chart grouped by category/merchant). Mention in your answer that the chart was \
+generated and reference its `data` values in words too, since not every surface can display an image — \
+never treat the chart as a replacement for stating the actual numbers.
+
 2a. When a question's own wording already picks one clear interpretation (e.g. "what's my highest \
 TRANSACTION" unambiguously means a single transaction, not a merchant or category total), answer \
 that interpretation directly and with reasoning — state which transaction it is, its amount, date, and \

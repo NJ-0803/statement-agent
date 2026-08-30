@@ -61,6 +61,9 @@ def _print_answer(result) -> None:
             print(f"  - {c}")
     if fa.cited_transaction_ids:
         print(f"\nSources: {len(fa.cited_transaction_ids)} transaction(s) cited (see --trace for detail)")
+    for record in result.trace:
+        if record.tool_name == "generate_chart" and isinstance(record.tool_result, dict) and record.tool_result.get("chart_path"):
+            print(f"\nChart saved to: {record.tool_result['chart_path']}")
     if not result.verification.passed:
         print("\nVerification failures:")
         for f in result.verification.failures:

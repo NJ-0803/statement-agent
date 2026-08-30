@@ -84,6 +84,10 @@
   .badge.INSUFFICIENT_INFORMATION { background: var(--red-dim); color: var(--red); border-color: var(--red); }
   .badge.ERROR { background: var(--red-dim); color: var(--red); border-color: var(--red); }
   .answer-text { white-space: pre-wrap; }
+  .chart-image {
+    display: block; max-width: 100%; margin-top: 14px; border: 1px solid var(--line);
+    border-radius: 2px; background: #fff;
+  }
   .amounts { margin-top: 12px; }
   .amount-pill {
     display: inline-block; font-family: var(--display); font-variant-numeric: tabular-nums; font-size: 13px;
@@ -328,6 +332,14 @@ function renderAnswer(card, data) {
   }
 
   card.appendChild(el('div', 'answer-text', escapeHtml(data.answer_text || '')));
+
+  if (data.chart_image) {
+    const img = document.createElement('img');
+    img.src = data.chart_image;
+    img.className = 'chart-image';
+    img.alt = 'Generated chart';
+    card.appendChild(img);
+  }
 
   if (data.amounts && data.amounts.length) {
     const wrap = el('div', 'amounts');

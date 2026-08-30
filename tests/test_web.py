@@ -133,6 +133,50 @@ class TestAskEndpointShapesRunAgentResultCorrectly:
         assert "error" in res.get_json()
 
 
+class TestChartImageEmbedding:
+    def test_generate_chart_in_trace_is_embedded_as_a_data_uri(self, populated_db_path, tmp_path, monkeypatch):
+        # use the real generate_chart tool to produce a real PNG, rather than fabricate
+        # bytes — confirms the endpoint reads and encodes an actual chart file correctly
+        import statement_agent.agent.tools as tools_module
+        from statement_agent.agent.tools import generate_chart
+
+        monkeypatch.setattr(tools_module, "_CHARTS_DIR", str(tmp_path / "charts"))
+        store = Store(populated_db_path)
+        real_ledger = store.all_transactions()
+        store.close()
+        chart_result = generate_chart(real_ledger, chart_type="bar", group_by="category", currency="INR")
+        assert "error" not in chart_result
+
+        fake_result = AgentRunResult(
+            final_answer=FinalAnswer(answer_text="Here's your category breakdown.", proposed_status="VERIFIED"),
+            verification=VerificationResult(status="VERIFIED", passed=True, failures=[]),
+            trace=[ToolCallRecord("generate_chart", {"chart_type": "bar", "group_by": "category"}, chart_result)],
+            attempts=1,
+        )
+        client = create_app(db_path=populated_db_path).test_client()
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "fake-key-for-this-test"}):
+            with patch("statement_agent.agent.loop.run_agent", return_value=fake_result):
+                res = client.post("/api/ask", json={"question": "show my spending by category"})
+
+        data = res.get_json()
+        assert data["chart_image"] is not None
+        assert data["chart_image"].startswith("data:image/png;base64,")
+
+    def test_no_chart_call_means_no_chart_image(self, populated_db_path):
+        fake_result = AgentRunResult(
+            final_answer=FinalAnswer(answer_text="You spent 100 INR.", proposed_status="VERIFIED"),
+            verification=VerificationResult(status="VERIFIED", passed=True, failures=[]),
+            trace=[],
+            attempts=1,
+        )
+        client = create_app(db_path=populated_db_path).test_client()
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "fake-key-for-this-test"}):
+            with patch("statement_agent.agent.loop.run_agent", return_value=fake_result):
+                res = client.post("/api/ask", json={"question": "how much did I spend"})
+
+        assert res.get_json()["chart_image"] is None
+
+
 class TestUploadEndpoint:
     def test_no_files_returns_400(self, empty_db_path, tmp_path):
         client = create_app(db_path=empty_db_path, upload_dir=str(tmp_path / "uploads")).test_client()

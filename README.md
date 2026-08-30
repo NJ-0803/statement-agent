@@ -77,7 +77,7 @@ into the running ledger, instead of only via `cli ingest` from the terminal — 
 python -m pytest tests/ -v
 ```
 
-247 tests, all runnable offline with no API key — they cover normalization (currency/date parsing),
+259 tests, all runnable offline with no API key — they cover normalization (currency/date parsing),
 PDF/CSV extraction (including the injection-defense and duplicate-detection tests described below),
 resolution (categorization, duplicates, reconciliation, anomaly detection), the query/aggregation
 tools, and the answer verifier's grounding/provenance checks. See `DECISIONS.md` §11 for the three real
@@ -162,6 +162,10 @@ runs as part of `pytest tests/` via `tests/test_gold_eval.py`, one test per case
   highest and lowest") deterministically — a `compute` tool for arithmetic over numbers already retrieved
   this turn, paired with `search_transactions(sort_by="closest_to_amount")`, rather than either doing the
   math itself or refusing a legitimately answerable question; see `DECISIONS.md` §27.
+- Render bar/line/pie charts on request ("show me a chart of...", "visualize...") — from the exact same
+  `aggregate_spending` grouped totals every text answer already uses, never a second computation path,
+  and never blending currencies into one chart. Shown inline in the web UI and saved as a PNG file from
+  the CLI; see `DECISIONS.md` §28.
 
 ## What it can't do (yet)
 

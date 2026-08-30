@@ -422,6 +422,97 @@ def aggregate_spending(
     )
 
 
+_CHART_TYPES = {"bar", "line", "pie"}
+_CHARTS_DIR = "generated_charts"
+
+
+def generate_chart(
+    ledger: list[Transaction],
+    *,
+    chart_type: str,
+    group_by: str,
+    category: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    currency: str | None = None,
+    title: str | None = None,
+) -> dict:
+    """Renders a chart from the SAME grouped totals aggregate_spending already computes
+    — never a separate aggregation path. The model picks chart_type/group_by; turning
+    those numbers into pixels is 100% deterministic matplotlib code, the same "no mental
+    math, no hand-drawn conclusions" principle as every other tool — a chart is just
+    another rendering of an already-grounded number, not a new kind of claim.
+
+    Never blends currencies into one chart (same rule as every other aggregate): if the
+    matched transactions span more than one currency and `currency` wasn't set to scope
+    it, this returns an error asking for one rather than silently mixing bars/slices
+    denominated in different currencies.
+    """
+    if chart_type not in _CHART_TYPES:
+        return {"error": f"unrecognized chart_type {chart_type!r} (expected one of {sorted(_CHART_TYPES)})"}
+    if group_by not in ("month", "category", "merchant"):
+        return {"error": f"unrecognized group_by {group_by!r} (expected month/category/merchant)"}
+
+    result = aggregate_spending(
+        ledger, category=category, date_from=date_from, date_to=date_to, currency=currency, group_by=group_by
+    )
+    if not result.group_breakdown:
+        return {"error": "no matching transactions to chart"}
+
+    currencies_present = {ccy for totals in result.group_breakdown.values() for ccy in totals}
+    if len(currencies_present) > 1:
+        return {
+            "error": (
+                f"transactions span multiple currencies ({sorted(currencies_present)}) — charting them "
+                f"together would blend currencies into one axis, which this system never does silently. "
+                f"Pass currency= to scope the chart to one."
+            )
+        }
+    chart_currency = currency or (next(iter(currencies_present)) if currencies_present else "INR")
+
+    labels = sorted(result.group_breakdown.keys())
+    values = [float(Decimal(result.group_breakdown[label].get(chart_currency, "0"))) for label in labels]
+
+    if chart_type == "pie" and any(v < 0 for v in values):
+        return {"error": "a pie chart can't meaningfully represent negative values — use bar or line instead"}
+
+    import os
+    import uuid
+
+    import matplotlib
+
+    matplotlib.use("Agg")  # non-interactive backend — this runs headless (CLI/server), never a display
+    import matplotlib.pyplot as plt
+
+    chart_title = title or f"{group_by.capitalize()} breakdown ({chart_currency})"
+    fig, ax = plt.subplots(figsize=(8, 5))
+    if chart_type == "bar":
+        ax.bar(labels, values, color="#c0392b")
+        ax.set_ylabel(chart_currency)
+        plt.xticks(rotation=45, ha="right")
+    elif chart_type == "line":
+        ax.plot(labels, values, marker="o", color="#c0392b")
+        ax.set_ylabel(chart_currency)
+        plt.xticks(rotation=45, ha="right")
+    else:  # pie
+        ax.pie(values, labels=labels, autopct="%1.1f%%")
+    ax.set_title(chart_title)
+    fig.tight_layout()
+
+    os.makedirs(_CHARTS_DIR, exist_ok=True)
+    chart_path = os.path.join(_CHARTS_DIR, f"{uuid.uuid4().hex}.png")
+    fig.savefig(chart_path, dpi=100)
+    plt.close(fig)  # release the figure — matters in a long-running server, not a one-shot script
+
+    return {
+        "chart_path": chart_path,
+        "chart_type": chart_type,
+        "group_by": group_by,
+        "currency": chart_currency,
+        "data": {label: result.group_breakdown[label].get(chart_currency, "0") for label in labels},
+    }
+
+
 def compare_periods(
     ledger: list[Transaction],
     *,
