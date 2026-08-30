@@ -157,8 +157,19 @@ def assign_categories(transactions: list[Transaction]) -> None:
         if t.economic_type != EconomicType.PURCHASE:
             continue  # only PURCHASE events get a spend category — everything else is economic-type-only
         result = categorize(t.merchant_raw or t.description_raw)
-        t.category = result.category
-        t.category_confidence = result.confidence
+        if result.category is not None:
+            t.category = result.category
+            t.category_confidence = result.confidence
+        elif t.category_declared:
+            # Our keyword list didn't match (common for generic/anonymized merchant text
+            # like "Hardware Store" or "Phone Company"), but the source file declared its
+            # own category for this row — trust that over leaving it uncategorized, at a
+            # lower confidence since it's the file's own taxonomy, not verified against ours.
+            t.category = t.category_declared
+            t.category_confidence = 0.5
+        else:
+            t.category = None
+            t.category_confidence = 0.0
 
 
 # ---------------------------------------------------------------------------

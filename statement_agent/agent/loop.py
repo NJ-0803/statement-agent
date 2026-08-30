@@ -77,7 +77,23 @@ TOOL_SCHEMAS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "category": {"type": "string", "enum": _CATEGORY_ENUM},
+                "category": {
+                    "type": "string",
+                    "description": (
+                        f"One of the built-in categories ({', '.join(_CATEGORY_ENUM)}) OR a category "
+                        "declared directly in the source file itself (e.g. 'Mortgage & Rent'), when the "
+                        "merchant text didn't match a built-in keyword and the source's own declared "
+                        "category was used instead — as seen in a prior tool result's `category` field."
+                    ),
+                },
+                "account": {
+                    "type": "string",
+                    "description": (
+                        "Filter to one of the source file's own declared accounts/cards (e.g. 'Platinum "
+                        "Card', 'Checking'), as seen in a prior tool result's `account` field — only "
+                        "meaningful when the source declared one."
+                    ),
+                },
                 "economic_types": {"type": "array", "items": {"type": "string", "enum": _ECONOMIC_TYPE_ENUM}},
                 "date_from": {"type": "string", "description": "ISO date YYYY-MM-DD"},
                 "date_to": {"type": "string", "description": "ISO date YYYY-MM-DD"},
@@ -132,12 +148,28 @@ TOOL_SCHEMAS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "category": {"type": "string", "enum": _CATEGORY_ENUM},
+                "category": {
+                    "type": "string",
+                    "description": (
+                        f"One of the built-in categories ({', '.join(_CATEGORY_ENUM)}) OR a category "
+                        "declared directly in the source file itself (e.g. 'Mortgage & Rent'), when the "
+                        "merchant text didn't match a built-in keyword and the source's own declared "
+                        "category was used instead — as seen in a prior tool result's `category` field."
+                    ),
+                },
+                "account": {
+                    "type": "string",
+                    "description": (
+                        "Filter to one of the source file's own declared accounts/cards (e.g. 'Platinum "
+                        "Card', 'Checking'), as seen in a prior tool result's `account` field — only "
+                        "meaningful when the source declared one."
+                    ),
+                },
                 "economic_types": {"type": "array", "items": {"type": "string", "enum": _ECONOMIC_TYPE_ENUM}, "description": "default: [PURCHASE]"},
                 "date_from": {"type": "string"},
                 "date_to": {"type": "string"},
                 "currency": {"type": "string"},
-                "group_by": {"type": "string", "enum": ["month", "category", "merchant"]},
+                "group_by": {"type": "string", "enum": ["month", "category", "merchant", "account"]},
                 "convert_to": {"type": "string", "description": "3-letter currency code, e.g. INR — converts and sums everything into this one currency, alongside the normal per-currency breakdown"},
             },
         },
@@ -148,7 +180,23 @@ TOOL_SCHEMAS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "category": {"type": "string", "enum": _CATEGORY_ENUM},
+                "category": {
+                    "type": "string",
+                    "description": (
+                        f"One of the built-in categories ({', '.join(_CATEGORY_ENUM)}) OR a category "
+                        "declared directly in the source file itself (e.g. 'Mortgage & Rent'), when the "
+                        "merchant text didn't match a built-in keyword and the source's own declared "
+                        "category was used instead — as seen in a prior tool result's `category` field."
+                    ),
+                },
+                "account": {
+                    "type": "string",
+                    "description": (
+                        "Filter to one of the source file's own declared accounts/cards (e.g. 'Platinum "
+                        "Card', 'Checking'), as seen in a prior tool result's `account` field — only "
+                        "meaningful when the source declared one."
+                    ),
+                },
                 "currency": {"type": "string"},
                 "period_a_start": {"type": "string"},
                 "period_a_end": {"type": "string"},
@@ -167,14 +215,31 @@ TOOL_SCHEMAS = [
             "mention it exists so the user can view it) and `data` (the exact values plotted, so you can "
             "also describe them in words). Never blends currencies into one chart — if the matched "
             "transactions span more than one currency, pass `currency` to scope it, or you'll get an "
-            "error explaining why. 'month' groups chronologically; 'category'/'merchant' alphabetically."
+            "error explaining why. 'month' groups chronologically; 'category'/'merchant'/'account' "
+            "alphabetically."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "chart_type": {"type": "string", "enum": ["bar", "line", "pie"]},
-                "group_by": {"type": "string", "enum": ["month", "category", "merchant"]},
-                "category": {"type": "string", "enum": _CATEGORY_ENUM},
+                "group_by": {"type": "string", "enum": ["month", "category", "merchant", "account"]},
+                "category": {
+                    "type": "string",
+                    "description": (
+                        f"One of the built-in categories ({', '.join(_CATEGORY_ENUM)}) OR a category "
+                        "declared directly in the source file itself (e.g. 'Mortgage & Rent'), when the "
+                        "merchant text didn't match a built-in keyword and the source's own declared "
+                        "category was used instead — as seen in a prior tool result's `category` field."
+                    ),
+                },
+                "account": {
+                    "type": "string",
+                    "description": (
+                        "Filter to one of the source file's own declared accounts/cards (e.g. 'Platinum "
+                        "Card', 'Checking'), as seen in a prior tool result's `account` field — only "
+                        "meaningful when the source declared one."
+                    ),
+                },
                 "date_from": {"type": "string", "description": "ISO date YYYY-MM-DD"},
                 "date_to": {"type": "string", "description": "ISO date YYYY-MM-DD"},
                 "currency": {"type": "string"},
@@ -195,9 +260,25 @@ TOOL_SCHEMAS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "group_by": {"type": "string", "enum": ["month", "category", "merchant"]},
+                "group_by": {"type": "string", "enum": ["month", "category", "merchant", "account"]},
                 "n": {"type": "integer", "description": "how many top transactions per group (default 5)"},
-                "category": {"type": "string", "enum": _CATEGORY_ENUM},
+                "category": {
+                    "type": "string",
+                    "description": (
+                        f"One of the built-in categories ({', '.join(_CATEGORY_ENUM)}) OR a category "
+                        "declared directly in the source file itself (e.g. 'Mortgage & Rent'), when the "
+                        "merchant text didn't match a built-in keyword and the source's own declared "
+                        "category was used instead — as seen in a prior tool result's `category` field."
+                    ),
+                },
+                "account": {
+                    "type": "string",
+                    "description": (
+                        "Filter to one of the source file's own declared accounts/cards (e.g. 'Platinum "
+                        "Card', 'Checking'), as seen in a prior tool result's `account` field — only "
+                        "meaningful when the source declared one."
+                    ),
+                },
                 "date_from": {"type": "string", "description": "ISO date YYYY-MM-DD"},
                 "date_to": {"type": "string", "description": "ISO date YYYY-MM-DD"},
                 "currency": {"type": "string"},
@@ -218,10 +299,26 @@ TOOL_SCHEMAS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "group_by": {"type": "string", "enum": ["month", "category", "merchant"]},
+                "group_by": {"type": "string", "enum": ["month", "category", "merchant", "account"]},
                 "top_n": {"type": "integer", "description": "top transactions per group in the table (default 5)"},
                 "chart_type": {"type": "string", "enum": ["bar", "line", "pie"], "description": "default bar"},
-                "category": {"type": "string", "enum": _CATEGORY_ENUM},
+                "category": {
+                    "type": "string",
+                    "description": (
+                        f"One of the built-in categories ({', '.join(_CATEGORY_ENUM)}) OR a category "
+                        "declared directly in the source file itself (e.g. 'Mortgage & Rent'), when the "
+                        "merchant text didn't match a built-in keyword and the source's own declared "
+                        "category was used instead — as seen in a prior tool result's `category` field."
+                    ),
+                },
+                "account": {
+                    "type": "string",
+                    "description": (
+                        "Filter to one of the source file's own declared accounts/cards (e.g. 'Platinum "
+                        "Card', 'Checking'), as seen in a prior tool result's `account` field — only "
+                        "meaningful when the source declared one."
+                    ),
+                },
                 "date_from": {"type": "string", "description": "ISO date YYYY-MM-DD"},
                 "date_to": {"type": "string", "description": "ISO date YYYY-MM-DD"},
                 "currency": {"type": "string"},
@@ -347,6 +444,7 @@ def _dispatch(tool_name: str, tool_input: dict, ledger: list[Transaction], docum
         return T.search_transactions(
             ledger,
             category=tool_input.get("category"),
+            account=tool_input.get("account"),
             economic_types=tuple(tool_input["economic_types"]) if tool_input.get("economic_types") else None,
             date_from=_parse_date(tool_input.get("date_from")),
             date_to=_parse_date(tool_input.get("date_to")),
@@ -363,6 +461,7 @@ def _dispatch(tool_name: str, tool_input: dict, ledger: list[Transaction], docum
         return T.aggregate_spending(
             ledger,
             category=tool_input.get("category"),
+            account=tool_input.get("account"),
             economic_types=tuple(tool_input["economic_types"]) if tool_input.get("economic_types") else ("PURCHASE",),
             date_from=_parse_date(tool_input.get("date_from")),
             date_to=_parse_date(tool_input.get("date_to")),
@@ -374,6 +473,7 @@ def _dispatch(tool_name: str, tool_input: dict, ledger: list[Transaction], docum
         return T.compare_periods(
             ledger,
             category=tool_input.get("category"),
+            account=tool_input.get("account"),
             currency=tool_input.get("currency"),
             period_a=(_parse_date(tool_input["period_a_start"]), _parse_date(tool_input["period_a_end"])),
             period_b=(_parse_date(tool_input["period_b_start"]), _parse_date(tool_input["period_b_end"])),
@@ -384,6 +484,7 @@ def _dispatch(tool_name: str, tool_input: dict, ledger: list[Transaction], docum
             chart_type=tool_input["chart_type"],
             group_by=tool_input["group_by"],
             category=tool_input.get("category"),
+            account=tool_input.get("account"),
             date_from=_parse_date(tool_input.get("date_from")),
             date_to=_parse_date(tool_input.get("date_to")),
             currency=tool_input.get("currency"),
@@ -395,6 +496,7 @@ def _dispatch(tool_name: str, tool_input: dict, ledger: list[Transaction], docum
             group_by=tool_input["group_by"],
             n=tool_input.get("n", 5),
             category=tool_input.get("category"),
+            account=tool_input.get("account"),
             date_from=_parse_date(tool_input.get("date_from")),
             date_to=_parse_date(tool_input.get("date_to")),
             currency=tool_input.get("currency"),
@@ -406,6 +508,7 @@ def _dispatch(tool_name: str, tool_input: dict, ledger: list[Transaction], docum
             top_n=tool_input.get("top_n", 5),
             chart_type=tool_input.get("chart_type", "bar"),
             category=tool_input.get("category"),
+            account=tool_input.get("account"),
             date_from=_parse_date(tool_input.get("date_from")),
             date_to=_parse_date(tool_input.get("date_to")),
             currency=tool_input.get("currency"),

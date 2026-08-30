@@ -3,6 +3,7 @@ from decimal import Decimal
 
 from statement_agent.ingest.pdf_native import parse_pdf_native
 from statement_agent.resolve import (
+    assign_categories,
     assign_extraction_sequence,
     categorize,
     detect_anomalies,
@@ -30,6 +31,46 @@ class TestCategorization:
         result = categorize("RAJ ENTERPRISES XYZ 9284")
         assert result.category is None
         assert result.confidence == 0.0
+
+
+def _purchase_txn(merchant: str, *, category_declared: str | None = None) -> Transaction:
+    return Transaction(
+        transaction_id="t1", document_id="d1", transaction_date=None, date_raw="",
+        merchant_raw=merchant, description_raw=merchant, amount=Decimal("10.00"),
+        direction=Direction.DEBIT, economic_type=EconomicType.PURCHASE,
+        category_declared=category_declared,
+    )
+
+
+class TestAssignCategoriesDeclaredFallback:
+    """A real uploaded file (DECISIONS.md §32) used generic, anonymized merchant text
+    ("Hardware Store", "Phone Company") that our keyword list can never match, but
+    declared its own category per row — assign_categories should use that instead of
+    leaving 70% of the ledger uncategorized."""
+
+    def test_keyword_match_wins_when_it_matches_even_if_declared_disagrees(self):
+        txns = [_purchase_txn("SWIGGY BANGALORE", category_declared="Food Delivery")]
+        assign_categories(txns)
+        assert txns[0].category == "Dining"  # our own taxonomy, not the file's label
+        assert txns[0].category_confidence == 0.9
+
+    def test_declared_category_used_when_keyword_match_fails(self):
+        txns = [_purchase_txn("Hardware Store", category_declared="Home Improvement")]
+        assign_categories(txns)
+        assert txns[0].category == "Home Improvement"
+        assert txns[0].category_confidence == 0.5  # lower confidence — file's own taxonomy, not verified
+
+    def test_no_declared_category_and_no_keyword_match_stays_uncategorized(self):
+        txns = [_purchase_txn("RAJ ENTERPRISES XYZ 9284", category_declared=None)]
+        assign_categories(txns)
+        assert txns[0].category is None
+        assert txns[0].category_confidence == 0.0
+
+    def test_non_purchase_never_gets_a_category_even_with_one_declared(self):
+        txns = [_purchase_txn("Biweekly Paycheck", category_declared="Paycheck")]
+        txns[0].economic_type = EconomicType.REFUND
+        assign_categories(txns)
+        assert txns[0].category is None
 
 
 class TestExtractionSequence:

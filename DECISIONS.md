@@ -1435,3 +1435,69 @@ produced clean one-line errors rather than a stack trace.
 
 15 new tests (`tests/test_clients.py`, `tests/test_cli.py`, one new `Store` test in `tests/test_store.py`).
 290/290 passing.
+
+## 32. Account/category/direction gaps found in a fourth real uploaded file — one fixed as a genuine feature, two as bugs
+
+A fourth real user-uploaded file (`personal_transactions_dashboard_ready_2.xlsx`, 806 rows, one person's
+Jan 2018–Sep 2019 history across 3 of their own accounts) surfaced three distinct, real issues on ingest —
+worth separating clearly, since they're different in kind.
+
+**1. Account Name silently discarded (a real capability gap, fixed as a feature).** The file's `Account
+Name` column (`Platinum Card` / `Silver Card` / `Checking`) matched no alias and was captured nowhere —
+not even in `notes`. `aggregate_spending`'s "total" blended all 3 of the user's own accounts with no
+distinction. This is the single most common real instance of the account-awareness gap already recorded
+in `NOT_IMPLEMENTED.md` (sharper than "16 blended accounts," sharper even than "7,651 strangers" from
+§30 — because this is the ordinary case: one person's own multiple cards, not a pathological dataset).
+Fixed by threading a real field through the whole stack: `Transaction.account_name` (schema.py),
+`account_name` column + SQLite migration for already-ingested ledgers (`store.py` — `ALTER TABLE ... ADD
+COLUMN` guarded by `PRAGMA table_info`, since `CREATE TABLE IF NOT EXISTS` never adds a column to an
+existing table and a real ledger shouldn't need `--fresh` just because the schema grew), a new
+`_ACCOUNT_ALIASES` column match in `csv_parser.py`/`xlsx_parser.py` (shared), and — to make it actually
+queryable, not just captured — an `account` filter on `search_transactions`/`aggregate_spending`/
+`compare_periods`/`top_n_per_group`/`generate_chart`/`generate_dashboard`, plus `"account"` as a new
+`group_by` dimension everywhere `"month"/"category"/"merchant"` already existed. `TOOL_SCHEMAS`'
+`category` field also had to stop being a fixed 10-value enum (see #2 below) — extended with an `account`
+free-string field, description-only, no enum (account names are inherently open-ended, always
+source-declared, never a fixed list).
+
+**2. 568/806 rows (70%) came back uncategorized — a keyword-matcher limitation, closed by trusting the
+file's own field instead of expanding the list.** The file's merchant text is generic/anonymized
+("Hardware Store", "Phone Company", "American Tavern") — nothing our India-oriented keyword list
+(`bigbasket`, `jio`, `indian oil`, ...) could ever match. Rather than chase an open-ended list of US-style
+generic merchant strings, the fix uses what the file already declares: it has its own `Category` column
+(`Mortgage & Rent`, `Gas & Fuel`, `Paycheck`, 22 values total) that was previously being folded into
+freeform `notes` (`_NOTES_ALIASES` included `"category"`) rather than treated as a real category signal.
+Split into its own `_CATEGORY_ALIASES`/`category_declared` field (schema + store + parser, same pattern as
+`account_name`), and `resolve.assign_categories()` now falls back to it — at a lower confidence (0.5 vs.
+0.9) since it's the file's own taxonomy, not verified against ours — only when the keyword matcher
+returns nothing; a matching keyword still wins, so the existing `dataset_public` categorization is
+unaffected. Result, verified directly against the real file: uncategorized PURCHASE rows went from 568 to
+0. `TOOL_SCHEMAS`'s `category` field changed from a fixed enum to a described free string for the same
+reason `account` has no enum — a declared category can now be anything the source file says.
+
+**3. Income rows silently counted as spend — a real correctness bug, not a design gap.** The file also has
+its own `Transaction Type` column (`debit`/`credit`) that `normalize_amount()` can never see — it only
+ever reads the amount string itself (sign, parentheses, `CR`/`DR` suffix), none of which distinguish this
+file's rows (every amount is a plain positive number). Consequence, found by checking a specific row
+rather than assumed: all 46 "Biweekly Paycheck" rows (~$2,000 each, `Transaction Type=credit`) were
+defaulting to `DEBIT`/`PURCHASE` — the user's own income was being counted as spend in every total.
+`"Credit Card Payment"` rows happened to still come out correctly, but only by accident, via
+`refine_economic_type`'s separate `CARD PAYMENT` keyword match on description text — `Biweekly Paycheck`
+matches no such keyword, so nothing caught it. Fixed with the same "explicit column overrides the
+inferred default" principle already used for the currency column: a new `_DIRECTION_ALIASES` match
+(`"transaction type"`/`"type"`) whose `credit`/`debit` value overrides `normalize_amount`'s inferred
+direction before `economic_type` is derived from it — an unrecognized or absent value falls back to the
+amount string's own sign unchanged, same lenient-no-op discipline as an invalid `sort_by`. Verified
+directly: all 46 Paycheck rows now come back `CREDIT`/`REFUND` (excluded from `aggregate_spending`'s
+default PURCHASE-only total), while the Amazon/debit rows are unaffected.
+
+All three verified together against the real re-ingested file, not just the unit tests: 0 uncategorized
+purchases (was 568), 3 distinct accounts correctly grouped and summed (₹8,996.31 / ₹49,456.78 / ₹4,589.33
+for Platinum Card / Checking / Silver Card), and 46/46 Paycheck rows correctly excluded from spend.
+
+20 new tests (`tests/test_resolve.py::TestAssignCategoriesDeclaredFallback`,
+`tests/test_csv_parser.py::TestCategoryAndAccountColumns` + `TestExplicitTransactionTypeColumn`,
+`tests/test_store.py::TestCategoryDeclaredAndAccountNameRoundTrip` + `TestMigrationAddsNewColumnsToExistingDb`,
+`tests/test_tools.py::TestAccountFilterAndGrouping`, two `tests/test_loop.py::TestDispatchAccountWiring`
+tests confirming `account` actually reaches the tool functions from `tool_input`, not just the schema).
+310/310 passing.

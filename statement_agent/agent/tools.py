@@ -44,6 +44,7 @@ class TxnView:
     direction: str
     economic_type: str
     category: str | None
+    account: str | None  # which of the source's own accounts/cards this row belongs to, when declared
     source_file: str
     source_page: int | None
     source_row: int | None
@@ -68,6 +69,7 @@ def _view(t: Transaction) -> TxnView:
         direction=t.direction.value,
         economic_type=t.economic_type.value,
         category=t.category,
+        account=t.account_name,
         source_file=src.file_path if src else "",
         source_page=src.page if src else None,
         source_row=src.row if src else None,
@@ -111,6 +113,7 @@ def search_transactions(
     ledger: list[Transaction],
     *,
     category: str | None = None,
+    account: str | None = None,
     economic_types: tuple[str, ...] | None = None,
     date_from: date | None = None,
     date_to: date | None = None,
@@ -121,7 +124,11 @@ def search_transactions(
     target_amount: str | None = None,  # required for sort_by="closest_to_amount"
     limit: int | None = None,
 ) -> SearchResult:
-    """`sort_by`/`limit` exist so a question like 'what's my single biggest expense'
+    """`account` filters to one of the source file's own declared accounts/cards (e.g.
+    "Platinum Card") — only meaningful for a source that declared one; a row with no
+    declared account never matches a non-None `account` filter.
+
+    `sort_by`/`limit` exist so a question like 'what's my single biggest expense'
     can be answered by sorting deterministically in code (e.g. sort_by="amount_desc",
     limit=1) — never by the model eyeballing a list and picking the largest itself,
     same 'no mental math' principle as every aggregate number.
@@ -147,6 +154,8 @@ def search_transactions(
     matched = []
     for t in ledger:
         if category and t.category != category:
+            continue
+        if account and t.account_name != account:
             continue
         if economic_types and t.economic_type.value not in economic_types:
             continue
@@ -297,17 +306,19 @@ def aggregate_spending(
     ledger: list[Transaction],
     *,
     category: str | None = None,
+    account: str | None = None,
     economic_types: tuple[str, ...] = ("PURCHASE",),
     date_from: date | None = None,
     date_to: date | None = None,
     currency: str | None = None,
-    group_by: str | None = None,  # "month" | "category" | "merchant" | None
+    group_by: str | None = None,  # "month" | "category" | "merchant" | "account" | None
     convert_to: str | None = None,
 ) -> AggregateResult:
     matched = [
         t
         for t in ledger
         if (category is None or t.category == category)
+        and (account is None or t.account_name == account)
         and t.economic_type.value in economic_types
         and (date_from is None and date_to is None or _in_range(t, date_from, date_to))
         and (currency is None or t.currency == currency)
@@ -350,6 +361,8 @@ def aggregate_spending(
                 # normalized, not raw: consolidates the same real merchant recorded
                 # with an inconsistent trailing corporate suffix across documents
                 key = t.merchant_normalized or t.merchant_raw or "UNKNOWN"
+            elif group_by == "account":
+                key = t.account_name or "UNKNOWN ACCOUNT"
             else:
                 continue
             group_breakdown.setdefault(key, {})
@@ -432,6 +445,7 @@ def generate_chart(
     chart_type: str,
     group_by: str,
     category: str | None = None,
+    account: str | None = None,
     date_from: date | None = None,
     date_to: date | None = None,
     currency: str | None = None,
@@ -450,11 +464,12 @@ def generate_chart(
     """
     if chart_type not in _CHART_TYPES:
         return {"error": f"unrecognized chart_type {chart_type!r} (expected one of {sorted(_CHART_TYPES)})"}
-    if group_by not in ("month", "category", "merchant"):
-        return {"error": f"unrecognized group_by {group_by!r} (expected month/category/merchant)"}
+    if group_by not in ("month", "category", "merchant", "account"):
+        return {"error": f"unrecognized group_by {group_by!r} (expected month/category/merchant/account)"}
 
     result = aggregate_spending(
-        ledger, category=category, date_from=date_from, date_to=date_to, currency=currency, group_by=group_by
+        ledger, category=category, account=account, date_from=date_from, date_to=date_to,
+        currency=currency, group_by=group_by,
     )
     if not result.group_breakdown:
         return {"error": "no matching transactions to chart"}
@@ -527,6 +542,7 @@ def top_n_per_group(
     group_by: str,
     n: int = 5,
     category: str | None = None,
+    account: str | None = None,
     date_from: date | None = None,
     date_to: date | None = None,
     currency: str | None = None,
@@ -542,8 +558,8 @@ def top_n_per_group(
     aggregate_spending/generate_chart): errors if the matched transactions span more than
     one currency and `currency` wasn't set to scope it.
     """
-    if group_by not in ("month", "category", "merchant"):
-        return {"error": f"unrecognized group_by {group_by!r} (expected month/category/merchant)"}
+    if group_by not in ("month", "category", "merchant", "account"):
+        return {"error": f"unrecognized group_by {group_by!r} (expected month/category/merchant/account)"}
     if n < 1:
         return {"error": "n must be at least 1"}
 
@@ -552,6 +568,7 @@ def top_n_per_group(
         for t in ledger
         if t.economic_type == EconomicType.PURCHASE
         and (category is None or t.category == category)
+        and (account is None or t.account_name == account)
         and (date_from is None and date_to is None or _in_range(t, date_from, date_to))
         and (currency is None or t.currency == currency)
     ]
@@ -575,6 +592,8 @@ def top_n_per_group(
             key = t.transaction_date.strftime("%Y-%m") if t.transaction_date else "UNKNOWN"
         elif group_by == "category":
             key = t.category or "UNCATEGORIZED"
+        elif group_by == "account":
+            key = t.account_name or "UNKNOWN ACCOUNT"
         else:  # merchant
             key = t.merchant_normalized or t.merchant_raw or "UNKNOWN"
         groups.setdefault(key, []).append(t)
@@ -609,6 +628,7 @@ def generate_dashboard(
     top_n: int = 5,
     chart_type: str = "bar",
     category: str | None = None,
+    account: str | None = None,
     date_from: date | None = None,
     date_to: date | None = None,
     currency: str | None = None,
@@ -625,14 +645,14 @@ def generate_dashboard(
     aggregate in this system.
     """
     chart_result = generate_chart(
-        ledger, chart_type=chart_type, group_by=group_by, category=category,
+        ledger, chart_type=chart_type, group_by=group_by, category=category, account=account,
         date_from=date_from, date_to=date_to, currency=currency, title=title,
     )
     if "error" in chart_result:
         return chart_result
 
     table_result = top_n_per_group(
-        ledger, group_by=group_by, n=top_n, category=category,
+        ledger, group_by=group_by, n=top_n, category=category, account=account,
         date_from=date_from, date_to=date_to, currency=chart_result["currency"],
     )
     if "error" in table_result:
@@ -667,11 +687,12 @@ def compare_periods(
     period_a: tuple[date, date],
     period_b: tuple[date, date],
     category: str | None = None,
+    account: str | None = None,
     currency: str | None = None,
 ) -> dict[str, AggregateResult]:
     return {
-        "period_a": aggregate_spending(ledger, category=category, date_from=period_a[0], date_to=period_a[1], currency=currency),
-        "period_b": aggregate_spending(ledger, category=category, date_from=period_b[0], date_to=period_b[1], currency=currency),
+        "period_a": aggregate_spending(ledger, category=category, account=account, date_from=period_a[0], date_to=period_a[1], currency=currency),
+        "period_b": aggregate_spending(ledger, category=category, account=account, date_from=period_b[0], date_to=period_b[1], currency=currency),
     }
 
 

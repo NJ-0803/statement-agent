@@ -52,6 +52,8 @@ CREATE TABLE IF NOT EXISTS transactions (
     economic_type_confidence REAL,
     category TEXT,
     category_confidence REAL,
+    category_declared TEXT,
+    account_name TEXT,
     source_file_path TEXT,
     source_page INTEGER,
     source_row INTEGER,
@@ -77,6 +79,22 @@ def _undec(v) -> Decimal | None:
     return Decimal(v) if v is not None else None
 
 
+# Columns added after a ledger.db may already exist on disk — CREATE TABLE IF NOT EXISTS
+# never adds a column to an existing table, so a real, already-ingested ledger needs an
+# explicit migration rather than requiring a --fresh re-ingest every time the schema grows.
+_TRANSACTION_COLUMN_MIGRATIONS = [
+    ("category_declared", "TEXT"),
+    ("account_name", "TEXT"),
+]
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(transactions)")}
+    for column, sql_type in _TRANSACTION_COLUMN_MIGRATIONS:
+        if column not in existing:
+            conn.execute(f"ALTER TABLE transactions ADD COLUMN {column} {sql_type}")
+
+
 class Store:
     def __init__(self, db_path: str):
         self.db_path = db_path
@@ -86,6 +104,7 @@ class Store:
         self.conn = sqlite3.connect(db_path)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(_SCHEMA)
+        _migrate(self.conn)
         self.conn.commit()
 
     def close(self):
@@ -136,7 +155,7 @@ class Store:
                 t.description_raw, t.merchant_raw, t.merchant_normalized,
                 _dec(t.amount), t.currency, t.amount_raw, t.direction.value,
                 t.economic_type.value, t.economic_type_confidence,
-                t.category, t.category_confidence,
+                t.category, t.category_confidence, t.category_declared, t.account_name,
                 src.file_path if src else None, src.page if src else None, src.row if src else None,
                 src.raw_text if src else None, src.extraction_method.value if src else None,
                 src.extraction_confidence if src else None,
@@ -148,9 +167,10 @@ class Store:
                 transaction_id, document_id, transaction_date, date_raw, date_plausible, extraction_sequence,
                 description_raw, merchant_raw, merchant_normalized, amount, currency, amount_raw, direction,
                 economic_type, economic_type_confidence, category, category_confidence,
+                category_declared, account_name,
                 source_file_path, source_page, source_row, source_raw_text, extraction_method,
                 extraction_confidence, duplicate_of, duplicate_reason, notes
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             rows,
         )
@@ -199,6 +219,8 @@ def _row_to_transaction(r: sqlite3.Row) -> Transaction:
         economic_type_confidence=r["economic_type_confidence"] if r["economic_type_confidence"] is not None else 1.0,
         category=r["category"],
         category_confidence=r["category_confidence"],
+        category_declared=r["category_declared"],
+        account_name=r["account_name"],
         source=SourceRef(
             file_path=r["source_file_path"] or "",
             file_hash="",

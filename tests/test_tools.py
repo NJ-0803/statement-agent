@@ -25,7 +25,7 @@ from statement_agent.store import Store
 DATASET = os.path.join(os.path.dirname(os.path.dirname(__file__)), "dataset_public")
 
 
-def _make_txn(txn_date: date, *, amount: str = "100.00", merchant: str = "TEST MERCHANT") -> Transaction:
+def _make_txn(txn_date: date, *, amount: str = "100.00", merchant: str = "TEST MERCHANT", account: str | None = None) -> Transaction:
     import uuid
 
     return Transaction(
@@ -39,6 +39,7 @@ def _make_txn(txn_date: date, *, amount: str = "100.00", merchant: str = "TEST M
         currency="INR",
         direction=Direction.DEBIT,
         economic_type=EconomicType.PURCHASE,
+        account_name=account,
     )
 
 
@@ -314,6 +315,59 @@ class TestSearchTransactions:
         assert all(date.fromisoformat(t.date) <= date(2025, 7, 31) for t in results if t.date)
 
 
+class TestAccountFilterAndGrouping:
+    """A real uploaded file (DECISIONS.md §32) spans 3 of the account holder's own
+    accounts/cards in one sheet (Platinum Card, Silver Card, Checking) — previously
+    silently discarded, now captured as account_name and queryable/groupable the same
+    way category already is."""
+
+    def _three_account_ledger(self):
+        return [
+            _make_txn(date(2025, 1, 1), amount="100.00", merchant="AMAZON", account="Platinum Card"),
+            _make_txn(date(2025, 1, 2), amount="50.00", merchant="NETFLIX", account="Platinum Card"),
+            _make_txn(date(2025, 1, 3), amount="200.00", merchant="RENT", account="Checking"),
+            _make_txn(date(2025, 1, 4), amount="30.00", merchant="ZOMATO", account="Silver Card"),
+            _make_txn(date(2025, 1, 5), amount="20.00", merchant="UNLABELED"),  # no declared account
+        ]
+
+    def test_search_transactions_account_filter(self):
+        ledger = self._three_account_ledger()
+        results = search_transactions(ledger, account="Platinum Card").results
+        assert {r.merchant for r in results} == {"AMAZON", "NETFLIX"}
+
+    def test_search_transactions_account_filter_excludes_rows_with_no_declared_account(self):
+        ledger = self._three_account_ledger()
+        results = search_transactions(ledger, account="Checking").results
+        assert len(results) == 1
+        assert results[0].merchant == "RENT"
+
+    def test_aggregate_spending_account_filter_scopes_the_total(self):
+        ledger = self._three_account_ledger()
+        result = aggregate_spending(ledger, account="Platinum Card")
+        assert result.by_currency["INR"].verified_total == "150.00"
+
+    def test_aggregate_spending_group_by_account(self):
+        ledger = self._three_account_ledger()
+        result = aggregate_spending(ledger, group_by="account")
+        assert result.group_breakdown["Platinum Card"]["INR"] == "150.00"
+        assert result.group_breakdown["Checking"]["INR"] == "200.00"
+        assert result.group_breakdown["Silver Card"]["INR"] == "30.00"
+        assert result.group_breakdown["UNKNOWN ACCOUNT"]["INR"] == "20.00"
+
+    def test_top_n_per_group_group_by_account(self):
+        ledger = self._three_account_ledger()
+        result = top_n_per_group(ledger, group_by="account", n=5, currency="INR")
+        assert set(result["groups"].keys()) == {"Platinum Card", "Checking", "Silver Card", "UNKNOWN ACCOUNT"}
+        assert result["groups"]["Platinum Card"][0]["merchant"] == "AMAZON"  # higher amount ranks first
+
+    def test_generate_chart_group_by_account(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("statement_agent.agent.tools._CHARTS_DIR", str(tmp_path))
+        ledger = self._three_account_ledger()
+        result = generate_chart(ledger, chart_type="bar", group_by="account", currency="INR")
+        assert "error" not in result
+        assert result["data"]["Platinum Card"] == "150.00"
+
+
 class TestSortAndLimit:
     """EC-22: 'biggest expense' must be answerable deterministically (sorted in code),
     never by the model eyeballing a list and picking the largest itself."""
@@ -498,7 +552,7 @@ class TestGenerateChart:
 
     def test_unrecognized_group_by_returns_error(self):
         ledger = _ledger()
-        result = generate_chart(ledger, chart_type="bar", group_by="account", currency="INR")
+        result = generate_chart(ledger, chart_type="bar", group_by="bogus_dimension", currency="INR")
         assert "error" in result
 
     def test_no_matching_transactions_returns_error_not_an_empty_chart(self):
@@ -565,7 +619,7 @@ class TestTopNPerGroup:
 
     def test_unrecognized_group_by_returns_error(self):
         ledger = _ledger()
-        result = top_n_per_group(ledger, group_by="account", n=5, currency="INR")
+        result = top_n_per_group(ledger, group_by="bogus_dimension", n=5, currency="INR")
         assert "error" in result
 
     def test_n_less_than_one_returns_error(self):

@@ -77,7 +77,7 @@ into the running ledger, instead of only via `cli ingest` from the terminal — 
 python -m pytest tests/ -v
 ```
 
-290 tests, all runnable offline with no API key — they cover normalization (currency/date parsing),
+310 tests, all runnable offline with no API key — they cover normalization (currency/date parsing),
 PDF/CSV extraction (including the injection-defense and duplicate-detection tests described below),
 resolution (categorization, duplicates, reconciliation, anomaly detection), the query/aggregation
 tools, and the answer verifier's grounding/provenance checks. See `DECISIONS.md` §11 for the three real
@@ -175,6 +175,13 @@ runs as part of `pytest tests/` via `tests/test_gold_eval.py`, one test per case
   client's own separate ledger `.db` file, so two people's transactions are never in the same in-memory
   ledger. Useful for a family tracking several members separately, or a CA with multiple clients; CLI/config
   only for now, no web UI switcher yet — see `DECISIONS.md` §31.
+- Capture and use a source file's own `Account Name`/`Category` columns when it declares them (e.g. one
+  person's own multiple cards, or a merchant taxonomy our keyword list doesn't recognize) — filterable and
+  groupable (`account`/`category` on every aggregate tool), and falls back to the file's own category label
+  only when our keyword matcher finds nothing, never overriding a confident match; see `DECISIONS.md` §32.
+- Respect an explicit debit/credit column when a source declares one, instead of only inferring direction
+  from the amount string's own sign — catches income rows (a paycheck, a refund) that would otherwise be
+  silently counted as spend just because the amount had no minus sign or CR/DR suffix; see `DECISIONS.md` §32.
 
 ## What it can't do (yet)
 

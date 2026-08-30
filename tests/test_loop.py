@@ -10,7 +10,7 @@ import uuid
 from datetime import date
 from decimal import Decimal
 
-from statement_agent.agent.loop import run_agent
+from statement_agent.agent.loop import _dispatch, run_agent
 from statement_agent.schema import Direction, EconomicType, SourceRef, Transaction
 
 
@@ -157,3 +157,35 @@ class TestReasoningCapture:
 
         assert result.verification.passed is False
         assert result.final_answer.proposed_status == "INSUFFICIENT_INFORMATION"
+
+
+class TestDispatchAccountWiring:
+    """The `account` filter added to search_transactions/aggregate_spending (DECISIONS.md
+    §32) must actually reach the tool functions from tool_input, not just exist in the
+    JSON schema the model sees."""
+
+    def _ledger(self):
+        return [
+            Transaction(
+                transaction_id=str(uuid.uuid4()), document_id="d1", transaction_date=date(2025, 1, 1),
+                date_raw="2025-01-01", merchant_raw="AMAZON", description_raw="AMAZON",
+                amount=Decimal("100.00"), currency="INR", direction=Direction.DEBIT,
+                economic_type=EconomicType.PURCHASE, account_name="Platinum Card",
+                source=SourceRef(file_path="x", file_hash="h1"),
+            ),
+            Transaction(
+                transaction_id=str(uuid.uuid4()), document_id="d1", transaction_date=date(2025, 1, 2),
+                date_raw="2025-01-02", merchant_raw="RENT", description_raw="RENT",
+                amount=Decimal("200.00"), currency="INR", direction=Direction.DEBIT,
+                economic_type=EconomicType.PURCHASE, account_name="Checking",
+                source=SourceRef(file_path="x", file_hash="h1"),
+            ),
+        ]
+
+    def test_search_transactions_account_param_reaches_the_tool(self):
+        result = _dispatch("search_transactions", {"account": "Platinum Card"}, self._ledger(), [])
+        assert [r.merchant for r in result.results] == ["AMAZON"]
+
+    def test_aggregate_spending_account_param_reaches_the_tool(self):
+        result = _dispatch("aggregate_spending", {"account": "Checking"}, self._ledger(), [])
+        assert result.by_currency["INR"].verified_total == "200.00"

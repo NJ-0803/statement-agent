@@ -2,7 +2,7 @@ import os
 from decimal import Decimal
 
 from statement_agent.ingest.csv_parser import parse_csv
-from statement_agent.schema import Direction
+from statement_agent.schema import Direction, EconomicType
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures")
 DATASET = os.path.join(os.path.dirname(os.path.dirname(__file__)), "dataset_public", "expenses")
@@ -107,3 +107,50 @@ class TestVerboseHeaderNames:
         assert currencies["Rajagopalan Ghose and Kant"] == "INR"
         assert currencies["Konda-Sodhi"] == "USD"
         assert currencies["Sule PLC"] == "EUR"
+
+
+class TestCategoryAndAccountColumns:
+    """A real uploaded file (DECISIONS.md §32) has its own "Category" and "Account Name"
+    columns spanning 3 accounts (Platinum Card, Silver Card, Checking) — both were
+    previously silently discarded (Category got smuggled into freeform notes; Account Name
+    wasn't captured anywhere at all)."""
+
+    def test_category_declared_captured_separately_from_notes(self):
+        r = parse_csv(os.path.join(FIXTURES, "category_and_account_columns.csv"))
+        amazon = next(t for t in r.transactions if t.merchant_raw == "Amazon")
+        assert amazon.category_declared == "Shopping"
+        assert "Shopping" not in amazon.notes  # no longer smuggled into freeform notes
+
+    def test_account_name_captured_per_row(self):
+        r = parse_csv(os.path.join(FIXTURES, "category_and_account_columns.csv"))
+        accounts = {t.merchant_raw: t.account_name for t in r.transactions}
+        assert accounts["Amazon"] == "Platinum Card"
+        assert accounts["Thai Restaurant"] == "Silver Card"
+        assert accounts["Biweekly Paycheck"] == "Checking"
+
+
+class TestExplicitTransactionTypeColumn:
+    """The same real file also has a "Transaction Type" (debit/credit) column that
+    normalize_amount can never see, since it only ever looks at the amount string itself
+    (no minus sign or CR/DR suffix on any row here). Without reading this column, income
+    rows like "Biweekly Paycheck" (amount="2298.09", Transaction Type="credit") were
+    silently defaulting to DEBIT/PURCHASE — counted as spend rather than excluded from it,
+    a real bug found live (DECISIONS.md §32)."""
+
+    def test_explicit_credit_overrides_the_amount_strings_inferred_debit(self):
+        r = parse_csv(os.path.join(FIXTURES, "category_and_account_columns.csv"))
+        paycheck = next(t for t in r.transactions if t.merchant_raw == "Biweekly Paycheck")
+        assert paycheck.direction == Direction.CREDIT
+        assert paycheck.economic_type == EconomicType.REFUND  # excluded from aggregate_spending's default PURCHASE-only total
+
+    def test_explicit_debit_rows_unaffected(self):
+        r = parse_csv(os.path.join(FIXTURES, "category_and_account_columns.csv"))
+        amazon = next(t for t in r.transactions if t.merchant_raw == "Amazon")
+        assert amazon.direction == Direction.DEBIT
+        assert amazon.economic_type == EconomicType.PURCHASE
+
+    def test_no_transaction_type_column_falls_back_to_amount_strings_own_sign(self):
+        # personal_expenses_q2_2025.csv has no such column — must be unaffected
+        r = parse_csv(os.path.join(DATASET, "personal_expenses_q2_2025.csv"))
+        assert len(r.transactions) == 6
+        assert len(r.rejected_rows) == 0

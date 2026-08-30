@@ -20,7 +20,25 @@ _DATE_ALIASES = {"date", "txn date", "transaction date", "posted date", "timesta
 _DESC_ALIASES = {"details", "merchant", "description", "narration", "particulars", "merchant name"}
 _AMOUNT_ALIASES = {"amount", "amt", "value", "transaction amount"}
 _CURRENCY_ALIASES = {"currency", "ccy", "transaction currency"}
-_NOTES_ALIASES = {"notes", "note", "category", "remarks", "transaction notes"}
+_NOTES_ALIASES = {"notes", "note", "remarks", "transaction notes"}
+# Kept separate from _NOTES_ALIASES: a column literally named "Category" is a declared
+# spend-category label, not freeform text — folding it into `notes` would make it
+# unreadable to assign_categories()'s declared-category fallback (see resolve.py).
+_CATEGORY_ALIASES = {"category"}
+# A source file can span more than one of the account holder's own accounts/cards in a
+# single sheet (e.g. "Platinum Card", "Checking") — captured so it stays queryable/
+# groupable instead of silently discarded (see DECISIONS.md §32).
+_ACCOUNT_ALIASES = {"account", "account name"}
+# Some expense sheets state debit/credit explicitly in its own column rather than via a
+# sign or CR/DR suffix on the amount itself (normalize_amount only ever looks at the
+# amount string — it has no way to see this column). Without reading it, a row like
+# amount="2000", "Transaction Type"="credit" silently defaults to DEBIT/PURCHASE — a
+# real bug found ingesting income rows ("Biweekly Paycheck") that were being counted as
+# spend (see DECISIONS.md §32). An explicit value here always overrides the amount
+# string's own inferred sign, the same way an explicit currency column already does.
+_DIRECTION_ALIASES = {"transaction type", "type"}
+_CREDIT_VALUES = {"credit", "cr"}
+_DEBIT_VALUES = {"debit", "dr"}
 
 
 @dataclass
@@ -98,6 +116,9 @@ def parse_tabular_rows(
     amount_col = _match_column(headers, _AMOUNT_ALIASES)
     currency_col = _match_column(headers, _CURRENCY_ALIASES)
     notes_col = _match_column(headers, _NOTES_ALIASES)
+    category_col = _match_column(headers, _CATEGORY_ALIASES)
+    account_col = _match_column(headers, _ACCOUNT_ALIASES)
+    direction_col = _match_column(headers, _DIRECTION_ALIASES)
 
     missing = [name for name, col in [("date", date_col), ("amount", amount_col)] if col is None]
     if missing:
@@ -140,6 +161,18 @@ def parse_tabular_rows(
 
         description = (row.get(desc_col) or "").strip() if desc_col else ""
         notes = (row.get(notes_col) or "").strip() if notes_col else ""
+        category_declared = (row.get(category_col) or "").strip() if category_col else ""
+        account_name = (row.get(account_col) or "").strip() if account_col else ""
+
+        direction = parsed_amount.direction
+        if direction_col:
+            direction_hint = (row.get(direction_col) or "").strip().lower()
+            if direction_hint in _CREDIT_VALUES:
+                direction = Direction.CREDIT
+            elif direction_hint in _DEBIT_VALUES:
+                direction = Direction.DEBIT
+            # any other value (blank, or something unrecognized) — same lenient no-op as
+            # an unrecognized sort_by elsewhere: fall back to the amount string's own sign
 
         txn = Transaction(
             transaction_id=str(uuid.uuid4()),
@@ -152,9 +185,11 @@ def parse_tabular_rows(
             amount=parsed_amount.amount,
             currency=parsed_amount.currency,
             amount_raw=raw_amount,
-            direction=parsed_amount.direction,
-            economic_type=EconomicType.PURCHASE if parsed_amount.direction == Direction.DEBIT else EconomicType.REFUND,
+            direction=direction,
+            economic_type=EconomicType.PURCHASE if direction == Direction.DEBIT else EconomicType.REFUND,
             notes=notes,
+            category_declared=category_declared or None,
+            account_name=account_name or None,
             source=SourceRef(
                 file_path=path,
                 file_hash=fhash,

@@ -103,6 +103,14 @@ class Transaction:
 
     category: str | None = None  # only set when economic_type == PURCHASE
     category_confidence: float | None = None
+    category_declared: str | None = None  # the source file's OWN category label, if it has one (e.g. an
+    # "Account Name"-style expense sheet's "Category" column) — kept separate from `category` (our own
+    # keyword-derived taxonomy) so a declared label is never silently overwritten by a failed keyword
+    # match; assign_categories() falls back to this when categorize() can't match the merchant text.
+
+    account_name: str | None = None  # which of the source's own accounts/cards this row belongs to (e.g.
+    # "Platinum Card", "Checking"), when the source file declares one — distinct from Document.account_label
+    # (a whole document's single stated account), since one tabular expense sheet can span several accounts.
 
     source: SourceRef | None = None
 

@@ -312,6 +312,17 @@ and updated as two of them got built on explicit direction:
   extension described above, deliberately not built for the same "unverified against real multi-account
   data" reason. The web UI has no client-switcher yet — CLI/config only, by explicit direction.
 
+  **The `account_id` extension itself is now partially built** (`DECISIONS.md` §32) — a fourth real
+  uploaded file turned out to be exactly the ordinary case this section always meant: one person, several
+  of their own accounts/cards in one sheet, not a pathological multi-stranger dataset. `Transaction.
+  account_name` is now a real field (schema + store migration + parser), filterable and groupable across
+  `search_transactions`/`aggregate_spending`/`top_n_per_group`/`generate_chart`/`generate_dashboard`. What's
+  still NOT built: this only works when the source file itself declares an account per row (a `CSV`/`XLSX`
+  `Account Name`-style column) — a PDF bank statement still has no way to know it holds more than one
+  account unless the statement text says so, and there's still no single `account_id` that unifies "this
+  card statement" + "this CSV's Account Name column" + "this other file" as the same underlying account
+  across different source documents.
+
 ---
 
 ## Summary: what would change if this continued
