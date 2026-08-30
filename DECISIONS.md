@@ -1292,3 +1292,66 @@ correctness against `aggregate_spending`, the multi-currency error and its resol
 unrecognized `chart_type`/`group_by`, no-matching-data, and the negative-value guard) plus 2 in
 `tests/test_web.py::TestChartImageEmbedding` (a real generated chart correctly base64-embedded; no chart
 call correctly means no `chart_image`). 259/259 passing.
+
+---
+
+## 29. `top_n_per_group` and `generate_dashboard` — inline in the web UI only, opt-in only
+
+Scoped down from an initial, much bigger ask ("Power BI-style dashboard") after clarifying two things
+directly rather than guessing: (1) rendered **inline in the existing web UI**, never a separate HTML page
+or file to open — a standalone page was explicitly rejected as clutter; (2) **only when the user's own
+wording explicitly asks for a "dashboard"**, never offered proactively after an ordinary complex answer.
+Both constraints shaped the design more than the visualization idea itself did.
+
+**`top_n_per_group` closes a real, separate gap surfaced by the request's own example** ("top 5
+transactions in every category"): no existing tool could answer this in one call — `search_transactions`
+sorts/limits over the *whole* matched set, not per group, so answering this today would need one call per
+category (close to `MAX_TOOL_ITERATIONS` on a ledger with many categories). New tool groups matched
+`PURCHASE` transactions by month/category/merchant and takes the top N by amount within each group, in one
+deterministic call. Same currency-blending guard as every other aggregate: errors if the matched
+transactions span more than one currency and `currency` wasn't passed to scope it. Cross-checked directly
+against `search_transactions` for one group in a test — not just "some ranking came back."
+
+**`generate_dashboard` reuses `generate_chart` and `top_n_per_group` internally — never a third,
+independently-computed source of numbers.** Verified directly: a test asserts the dashboard's `chart_data`
+matches a separate `generate_chart` call byte-for-byte, and `table_rows` matches a separate
+`top_n_per_group` call byte-for-byte. The combined table is capped at 200 rows total
+(`_DASHBOARD_MAX_TABLE_ROWS`) with `table_truncated`/`table_total_rows` disclosed — same discipline as
+`search_transactions`'s cap, since a dashboard spanning many groups × N rows each could otherwise grow
+unbounded and silently look complete.
+
+**Prompt rule 2f is the actual guardrail against scope creep, not just a style note.** `generate_dashboard`
+fires ONLY when the user's own wording explicitly says "dashboard"/"dashboard view"/"dashboard style" — an
+ordinary "chart my spending" or "top 5 per category" question, however complex, gets `generate_chart` or
+`top_n_per_group` directly, and must NOT be followed by an unprompted "you can also view this as a
+dashboard" offer. This was an explicit, direct instruction, not a default I chose — the opt-in gate is the
+main behavioral change this section makes, more than the rendering itself.
+
+**Web UI only, genuinely inline — no new route, no separate file to open.** `web/app.py`'s `/api/ask`
+already embedded a `generate_chart`'s PNG as a base64 data URI (§28); extended to also detect
+`generate_dashboard` (same chart-embedding code path, since both tools return a `chart_path`) and pass
+through `table_rows`/`table_total_rows`/`table_truncated` as a new `dashboard_table` field. The frontend
+renders an actual HTML `<table>` in the SAME chat card as the chart and the text answer — no iframe, no
+new tab, no static file served. The CLI only prints the chart's file path (same as it already did for
+`generate_chart`) — the rich table stays web-UI-only, per direction, rather than reformatted as ASCII art
+for a surface that was explicitly out of scope.
+
+**Live-verified end to end, and the model's own self-correction was worth watching closely, not just the
+final answer.** Asked *"Give me a dashboard view of the top 3 transactions in every category"* — the
+model's first `generate_dashboard` call had no `currency` set, hit the same multi-currency guard
+`generate_chart`/`top_n_per_group` already enforce, and its own next reasoning step said *"I need to scope
+the dashboard to one currency at a time since the ledger has both INR and USD"* — it recovered by making
+two separately-scoped calls (INR, then USD) without being told to. Final answer correctly grouped top-3
+transactions per category in both currencies, correctly flagged the two uncategorized outliers (₹80,000
+Grandeur Jewellers, $340 Grand Hyatt) as sitting outside the category totals, and both chart files were
+real, valid PNGs.
+
+**Not live-verified this round, blocked by the same recurring Anthropic credit exhaustion as earlier
+sessions:** the negative case — a plain "what are the top 3 in every category" question, with no
+"dashboard" language, correctly calling `top_n_per_group` alone rather than `generate_dashboard`. Covered
+by rule 2f's explicit instruction and by `TestTopNPerGroup`'s unit tests, but not confirmed against the
+live model in this pass.
+
+24 new tests (`tests/test_tools.py::TestTopNPerGroup`, `TestGenerateDashboard`; `tests/test_web.py`'s two
+new dashboard-passthrough tests, including one confirming a plain `generate_chart` call never populates
+`dashboard_table`). 271/271 passing.

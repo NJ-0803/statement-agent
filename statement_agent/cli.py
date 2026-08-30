@@ -62,8 +62,11 @@ def _print_answer(result) -> None:
     if fa.cited_transaction_ids:
         print(f"\nSources: {len(fa.cited_transaction_ids)} transaction(s) cited (see --trace for detail)")
     for record in result.trace:
-        if record.tool_name == "generate_chart" and isinstance(record.tool_result, dict) and record.tool_result.get("chart_path"):
+        if record.tool_name in ("generate_chart", "generate_dashboard") and isinstance(record.tool_result, dict) and record.tool_result.get("chart_path"):
             print(f"\nChart saved to: {record.tool_result['chart_path']}")
+            # The dashboard table itself renders richly in the web UI only (per explicit
+            # direction) — the CLI just points to the chart file rather than reformatting
+            # a multi-group table as ASCII art.
     if not result.verification.passed:
         print("\nVerification failures:")
         for f in result.verification.failures:

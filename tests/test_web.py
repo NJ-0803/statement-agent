@@ -176,6 +176,59 @@ class TestChartImageEmbedding:
 
         assert res.get_json()["chart_image"] is None
 
+    def test_generate_dashboard_passes_through_both_chart_and_table(self, populated_db_path, tmp_path, monkeypatch):
+        import statement_agent.agent.tools as tools_module
+        from statement_agent.agent.tools import generate_dashboard
+
+        monkeypatch.setattr(tools_module, "_CHARTS_DIR", str(tmp_path / "charts"))
+        store = Store(populated_db_path)
+        real_ledger = store.all_transactions()
+        store.close()
+        dashboard_result = generate_dashboard(real_ledger, group_by="category", top_n=2, currency="INR")
+        assert "error" not in dashboard_result
+
+        fake_result = AgentRunResult(
+            final_answer=FinalAnswer(answer_text="Here's your dashboard.", proposed_status="VERIFIED"),
+            verification=VerificationResult(status="VERIFIED", passed=True, failures=[]),
+            trace=[ToolCallRecord("generate_dashboard", {"group_by": "category", "top_n": 2}, dashboard_result)],
+            attempts=1,
+        )
+        client = create_app(db_path=populated_db_path).test_client()
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "fake-key-for-this-test"}):
+            with patch("statement_agent.agent.loop.run_agent", return_value=fake_result):
+                res = client.post("/api/ask", json={"question": "show me a dashboard of top transactions per category"})
+
+        data = res.get_json()
+        assert data["chart_image"] is not None
+        assert data["dashboard_table"] is not None
+        assert data["dashboard_table"]["rows"] == dashboard_result["table_rows"]
+        assert data["dashboard_table"]["total_rows"] == dashboard_result["table_total_rows"]
+        assert data["dashboard_table"]["currency"] == "INR"
+
+    def test_generate_chart_alone_never_populates_dashboard_table(self, populated_db_path, tmp_path, monkeypatch):
+        # a plain chart request must not accidentally trigger dashboard-table rendering
+        import statement_agent.agent.tools as tools_module
+        from statement_agent.agent.tools import generate_chart
+
+        monkeypatch.setattr(tools_module, "_CHARTS_DIR", str(tmp_path / "charts"))
+        store = Store(populated_db_path)
+        real_ledger = store.all_transactions()
+        store.close()
+        chart_result = generate_chart(real_ledger, chart_type="bar", group_by="category", currency="INR")
+
+        fake_result = AgentRunResult(
+            final_answer=FinalAnswer(answer_text="Here's your chart.", proposed_status="VERIFIED"),
+            verification=VerificationResult(status="VERIFIED", passed=True, failures=[]),
+            trace=[ToolCallRecord("generate_chart", {"chart_type": "bar", "group_by": "category"}, chart_result)],
+            attempts=1,
+        )
+        client = create_app(db_path=populated_db_path).test_client()
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "fake-key-for-this-test"}):
+            with patch("statement_agent.agent.loop.run_agent", return_value=fake_result):
+                res = client.post("/api/ask", json={"question": "chart my spending"})
+
+        assert res.get_json()["dashboard_table"] is None
+
 
 class TestUploadEndpoint:
     def test_no_files_returns_400(self, empty_db_path, tmp_path):

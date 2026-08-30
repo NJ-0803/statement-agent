@@ -184,6 +184,53 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "name": "top_n_per_group",
+        "description": (
+            "The top N transactions by amount WITHIN EACH group — e.g. 'top 5 transactions in every "
+            "category' in ONE call, instead of one search_transactions call per category (which could "
+            "approach the tool-call limit on a ledger with many categories). Returns `groups`: "
+            "{group_key: [{rank, merchant, date, amount, transaction_id}, ...]}. Never blends currencies "
+            "— pass `currency` to scope if the matched transactions span more than one."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "group_by": {"type": "string", "enum": ["month", "category", "merchant"]},
+                "n": {"type": "integer", "description": "how many top transactions per group (default 5)"},
+                "category": {"type": "string", "enum": _CATEGORY_ENUM},
+                "date_from": {"type": "string", "description": "ISO date YYYY-MM-DD"},
+                "date_to": {"type": "string", "description": "ISO date YYYY-MM-DD"},
+                "currency": {"type": "string"},
+            },
+            "required": ["group_by"],
+        },
+    },
+    {
+        "name": "generate_dashboard",
+        "description": (
+            "A combined chart + table view (a chart of group totals, plus the top-N transactions within "
+            "each group), rendered inline in the web UI only — NOT a separate page or file to open. ONLY "
+            "use this when the user's own wording EXPLICITLY asks for a 'dashboard', 'dashboard view', or "
+            "'dashboard style' answer. For an ordinary 'top 5 in each category' or 'chart my spending' "
+            "question with no dashboard language, use top_n_per_group or generate_chart directly instead "
+            "— a dashboard is a bigger answer than a plain question asks for. Never blends currencies."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "group_by": {"type": "string", "enum": ["month", "category", "merchant"]},
+                "top_n": {"type": "integer", "description": "top transactions per group in the table (default 5)"},
+                "chart_type": {"type": "string", "enum": ["bar", "line", "pie"], "description": "default bar"},
+                "category": {"type": "string", "enum": _CATEGORY_ENUM},
+                "date_from": {"type": "string", "description": "ISO date YYYY-MM-DD"},
+                "date_to": {"type": "string", "description": "ISO date YYYY-MM-DD"},
+                "currency": {"type": "string"},
+                "title": {"type": "string"},
+            },
+            "required": ["group_by"],
+        },
+    },
+    {
         "name": "find_disputable_transactions",
         "description": "Returns transactions flagged as possible duplicates, statistical outliers, or implausible dates — for 'anything I should dispute/review' questions.",
         "input_schema": {"type": "object", "properties": {}},
@@ -336,6 +383,28 @@ def _dispatch(tool_name: str, tool_input: dict, ledger: list[Transaction], docum
             ledger,
             chart_type=tool_input["chart_type"],
             group_by=tool_input["group_by"],
+            category=tool_input.get("category"),
+            date_from=_parse_date(tool_input.get("date_from")),
+            date_to=_parse_date(tool_input.get("date_to")),
+            currency=tool_input.get("currency"),
+            title=tool_input.get("title"),
+        )
+    if tool_name == "top_n_per_group":
+        return T.top_n_per_group(
+            ledger,
+            group_by=tool_input["group_by"],
+            n=tool_input.get("n", 5),
+            category=tool_input.get("category"),
+            date_from=_parse_date(tool_input.get("date_from")),
+            date_to=_parse_date(tool_input.get("date_to")),
+            currency=tool_input.get("currency"),
+        )
+    if tool_name == "generate_dashboard":
+        return T.generate_dashboard(
+            ledger,
+            group_by=tool_input["group_by"],
+            top_n=tool_input.get("top_n", 5),
+            chart_type=tool_input.get("chart_type", "bar"),
             category=tool_input.get("category"),
             date_from=_parse_date(tool_input.get("date_from")),
             date_to=_parse_date(tool_input.get("date_to")),

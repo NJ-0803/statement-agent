@@ -88,6 +88,16 @@
     display: block; max-width: 100%; margin-top: 14px; border: 1px solid var(--line);
     border-radius: 2px; background: #fff;
   }
+  .dashboard-table-wrap { margin-top: 14px; overflow-x: auto; }
+  .dashboard-table {
+    width: 100%; border-collapse: collapse; font-size: 12.5px; font-variant-numeric: tabular-nums;
+  }
+  .dashboard-table th {
+    text-align: left; font-family: var(--display); font-size: 10.5px; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--faint); padding: 6px 10px; border-bottom: 1px solid var(--line);
+  }
+  .dashboard-table td { padding: 6px 10px; border-bottom: 1px solid var(--line-soft); color: var(--ink); }
+  .dashboard-table tr:hover td { background: var(--panel-2); }
   .amounts { margin-top: 12px; }
   .amount-pill {
     display: inline-block; font-family: var(--display); font-variant-numeric: tabular-nums; font-size: 13px;
@@ -339,6 +349,30 @@ function renderAnswer(card, data) {
     img.className = 'chart-image';
     img.alt = 'Generated chart';
     card.appendChild(img);
+  }
+
+  if (data.dashboard_table && data.dashboard_table.rows && data.dashboard_table.rows.length) {
+    const dt = data.dashboard_table;
+    const wrap = el('div', 'dashboard-table-wrap');
+    const table = document.createElement('table');
+    table.className = 'dashboard-table';
+    const thead = el('tr');
+    ['Group', 'Rank', 'Merchant', 'Date', `Amount${dt.currency ? ' (' + dt.currency + ')' : ''}`].forEach(h => {
+      thead.appendChild(el('th', null, escapeHtml(h)));
+    });
+    table.appendChild(thead);
+    dt.rows.forEach(r => {
+      const tr = el('tr');
+      [r.group, r.rank, r.merchant || '', r.date || '', r.amount].forEach(v => {
+        tr.appendChild(el('td', null, escapeHtml(String(v))));
+      });
+      table.appendChild(tr);
+    });
+    wrap.appendChild(table);
+    if (dt.truncated) {
+      wrap.appendChild(el('div', 'meta', `Showing ${dt.rows.length} of ${dt.total_rows} rows (capped)`));
+    }
+    card.appendChild(wrap);
   }
 
   if (data.amounts && data.amounts.length) {

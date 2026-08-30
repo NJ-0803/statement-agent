@@ -77,7 +77,7 @@ into the running ledger, instead of only via `cli ingest` from the terminal — 
 python -m pytest tests/ -v
 ```
 
-259 tests, all runnable offline with no API key — they cover normalization (currency/date parsing),
+271 tests, all runnable offline with no API key — they cover normalization (currency/date parsing),
 PDF/CSV extraction (including the injection-defense and duplicate-detection tests described below),
 resolution (categorization, duplicates, reconciliation, anomaly detection), the query/aggregation
 tools, and the answer verifier's grounding/provenance checks. See `DECISIONS.md` §11 for the three real
@@ -166,6 +166,10 @@ runs as part of `pytest tests/` via `tests/test_gold_eval.py`, one test per case
   `aggregate_spending` grouped totals every text answer already uses, never a second computation path,
   and never blending currencies into one chart. Shown inline in the web UI and saved as a PNG file from
   the CLI; see `DECISIONS.md` §28.
+- Answer "top N transactions in every category/merchant/month" in one deterministic call
+  (`top_n_per_group`), rather than one `search_transactions` call per group — and, only when explicitly
+  asked for a "dashboard," combine that with a chart in one inline view in the web UI (never a separate
+  page); see `DECISIONS.md` §29.
 
 ## What it can't do (yet)
 

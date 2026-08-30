@@ -48,6 +48,16 @@ breakdown is a pie or bar chart grouped by category/merchant). Mention in your a
 generated and reference its `data` values in words too, since not every surface can display an image — \
 never treat the chart as a replacement for stating the actual numbers.
 
+2e. A question naming "top N" transactions "in every category" (or "each"/"per" category/merchant/month) \
+needs top_n_per_group in ONE call — never one search_transactions call per group, which wastes tool calls \
+and can approach the iteration limit on a ledger with many categories.
+
+2f. generate_dashboard is different from generate_chart: ONLY call it when the user's own wording \
+EXPLICITLY asks for a "dashboard," "dashboard view," or "dashboard style" answer. A plain "chart my \
+spending" or "top 5 per category" question — even a complex, multi-part one — should get generate_chart \
+or top_n_per_group directly, not a dashboard, and should NOT be followed by an unprompted offer of a \
+dashboard view either. Only mention the dashboard capability at all if the user asked for one.
+
 2a. When a question's own wording already picks one clear interpretation (e.g. "what's my highest \
 TRANSACTION" unambiguously means a single transaction, not a merchant or category total), answer \
 that interpretation directly and with reasoning — state which transaction it is, its amount, date, and \

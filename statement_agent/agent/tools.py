@@ -476,33 +476,8 @@ def generate_chart(
     if chart_type == "pie" and any(v < 0 for v in values):
         return {"error": "a pie chart can't meaningfully represent negative values — use bar or line instead"}
 
-    import os
-    import uuid
-
-    import matplotlib
-
-    matplotlib.use("Agg")  # non-interactive backend — this runs headless (CLI/server), never a display
-    import matplotlib.pyplot as plt
-
     chart_title = title or f"{group_by.capitalize()} breakdown ({chart_currency})"
-    fig, ax = plt.subplots(figsize=(8, 5))
-    if chart_type == "bar":
-        ax.bar(labels, values, color="#c0392b")
-        ax.set_ylabel(chart_currency)
-        plt.xticks(rotation=45, ha="right")
-    elif chart_type == "line":
-        ax.plot(labels, values, marker="o", color="#c0392b")
-        ax.set_ylabel(chart_currency)
-        plt.xticks(rotation=45, ha="right")
-    else:  # pie
-        ax.pie(values, labels=labels, autopct="%1.1f%%")
-    ax.set_title(chart_title)
-    fig.tight_layout()
-
-    os.makedirs(_CHARTS_DIR, exist_ok=True)
-    chart_path = os.path.join(_CHARTS_DIR, f"{uuid.uuid4().hex}.png")
-    fig.savefig(chart_path, dpi=100)
-    plt.close(fig)  # release the figure — matters in a long-running server, not a one-shot script
+    chart_path = _render_chart_png(labels, values, chart_type, chart_currency, chart_title)
 
     return {
         "chart_path": chart_path,
@@ -510,6 +485,179 @@ def generate_chart(
         "group_by": group_by,
         "currency": chart_currency,
         "data": {label: result.group_breakdown[label].get(chart_currency, "0") for label in labels},
+    }
+
+
+def _render_chart_png(labels: list[str], values: list[float], chart_type: str, currency: str, title: str) -> str:
+    """Shared rendering step for generate_chart and generate_dashboard — one matplotlib
+    code path, not two that could quietly drift apart. Always non-interactive (this runs
+    headless, in a CLI process or a Flask server, never with a display)."""
+    import os
+    import uuid
+
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    if chart_type == "bar":
+        ax.bar(labels, values, color="#c0392b")
+        ax.set_ylabel(currency)
+        plt.xticks(rotation=45, ha="right")
+    elif chart_type == "line":
+        ax.plot(labels, values, marker="o", color="#c0392b")
+        ax.set_ylabel(currency)
+        plt.xticks(rotation=45, ha="right")
+    else:  # pie
+        ax.pie(values, labels=labels, autopct="%1.1f%%")
+    ax.set_title(title)
+    fig.tight_layout()
+
+    os.makedirs(_CHARTS_DIR, exist_ok=True)
+    chart_path = os.path.join(_CHARTS_DIR, f"{uuid.uuid4().hex}.png")
+    fig.savefig(chart_path, dpi=100)
+    plt.close(fig)  # release the figure — matters in a long-running server, not a one-shot script
+    return chart_path
+
+
+def top_n_per_group(
+    ledger: list[Transaction],
+    *,
+    group_by: str,
+    n: int = 5,
+    category: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    currency: str | None = None,
+) -> dict:
+    """The top N transactions by amount WITHIN EACH group (e.g. top 5 per category) — a
+    question search_transactions alone can't answer in one call, since it sorts/limits
+    over the whole matched set, not per group. Answering "top N in every category"
+    without this would need one search_transactions call per category (close to
+    MAX_TOOL_ITERATIONS for a 10-category ledger) instead of one deterministic call here.
+
+    Reuses PURCHASE-only filtering consistent with aggregate_spending's default scope —
+    this is about spend, not every economic type. Never blends currencies (same rule as
+    aggregate_spending/generate_chart): errors if the matched transactions span more than
+    one currency and `currency` wasn't set to scope it.
+    """
+    if group_by not in ("month", "category", "merchant"):
+        return {"error": f"unrecognized group_by {group_by!r} (expected month/category/merchant)"}
+    if n < 1:
+        return {"error": "n must be at least 1"}
+
+    matched = [
+        t
+        for t in ledger
+        if t.economic_type == EconomicType.PURCHASE
+        and (category is None or t.category == category)
+        and (date_from is None and date_to is None or _in_range(t, date_from, date_to))
+        and (currency is None or t.currency == currency)
+    ]
+    if not matched:
+        return {"error": "no matching transactions"}
+
+    currencies_present = {t.currency for t in matched}
+    if len(currencies_present) > 1:
+        return {
+            "error": (
+                f"transactions span multiple currencies ({sorted(currencies_present)}) — ranking them "
+                f"together would blend currencies, which this system never does silently. Pass currency= "
+                f"to scope to one."
+            )
+        }
+    result_currency = currency or next(iter(currencies_present))
+
+    groups: dict[str, list[Transaction]] = {}
+    for t in matched:
+        if group_by == "month":
+            key = t.transaction_date.strftime("%Y-%m") if t.transaction_date else "UNKNOWN"
+        elif group_by == "category":
+            key = t.category or "UNCATEGORIZED"
+        else:  # merchant
+            key = t.merchant_normalized or t.merchant_raw or "UNKNOWN"
+        groups.setdefault(key, []).append(t)
+
+    table = {
+        key: [_view(t) for t in sorted(txns, key=lambda t: t.amount, reverse=True)[:n]]
+        for key, txns in groups.items()
+    }
+
+    return {
+        "group_by": group_by,
+        "n": n,
+        "currency": result_currency,
+        "groups": {
+            key: [
+                {"rank": i + 1, "merchant": v.merchant, "date": v.date, "amount": v.amount, "transaction_id": v.transaction_id}
+                for i, v in enumerate(views)
+            ]
+            for key, views in table.items()
+        },
+    }
+
+
+_DASHBOARD_MAX_TABLE_ROWS = 200  # same disclosure discipline as search_transactions' cap — a dashboard
+# combining many groups x n rows each could grow large; capped and disclosed, never silently truncated
+
+
+def generate_dashboard(
+    ledger: list[Transaction],
+    *,
+    group_by: str,
+    top_n: int = 5,
+    chart_type: str = "bar",
+    category: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    currency: str | None = None,
+    title: str | None = None,
+) -> dict:
+    """A combined chart + table view — reuses aggregate_spending (for the chart) and
+    top_n_per_group (for the table), never a separate computation path for either. Only
+    call this when the user EXPLICITLY asks for a "dashboard"/"dashboard view"/"dashboard
+    style" answer (prompt rule) — for an ordinary "top 5 in each category" question with
+    no dashboard language, call top_n_per_group directly instead, since not every surface
+    (the CLI) can render this richly, and a dashboard is a bigger answer than was asked for.
+
+    Never blends currencies into either the chart or the table — same rule as every other
+    aggregate in this system.
+    """
+    chart_result = generate_chart(
+        ledger, chart_type=chart_type, group_by=group_by, category=category,
+        date_from=date_from, date_to=date_to, currency=currency, title=title,
+    )
+    if "error" in chart_result:
+        return chart_result
+
+    table_result = top_n_per_group(
+        ledger, group_by=group_by, n=top_n, category=category,
+        date_from=date_from, date_to=date_to, currency=chart_result["currency"],
+    )
+    if "error" in table_result:
+        return table_result
+
+    rows = [
+        {"group": key, **row}
+        for key, group_rows in table_result["groups"].items()
+        for row in group_rows
+    ]
+    total_rows = len(rows)
+    truncated = total_rows > _DASHBOARD_MAX_TABLE_ROWS
+    if truncated:
+        rows = rows[:_DASHBOARD_MAX_TABLE_ROWS]
+
+    return {
+        "chart_path": chart_result["chart_path"],
+        "chart_type": chart_type,
+        "group_by": group_by,
+        "top_n": top_n,
+        "currency": chart_result["currency"],
+        "chart_data": chart_result["data"],
+        "table_rows": rows,
+        "table_total_rows": total_rows,
+        "table_truncated": truncated,
     }
 
 

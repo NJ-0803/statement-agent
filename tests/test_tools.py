@@ -12,9 +12,11 @@ from statement_agent.agent.tools import (
     dataset_coverage,
     find_disputable_transactions,
     generate_chart,
+    generate_dashboard,
     list_documents,
     search_transactions,
     summarize_statement,
+    top_n_per_group,
 )
 from statement_agent.ingest.pipeline import ingest_folder
 from statement_agent.schema import Direction, EconomicType, Transaction
@@ -527,6 +529,99 @@ class TestGenerateChart:
         result = generate_chart([], chart_type="pie", group_by="category", currency="INR")
         assert "error" in result
         assert "negative" in result["error"].lower()
+
+
+class TestTopNPerGroup:
+    """Closes a real gap: "top N in every category" needed one search_transactions call
+    per category before this existed — close to the tool-call budget on a ledger with
+    many categories. One deterministic call instead."""
+
+    def test_top_2_per_category_is_correctly_ranked_within_each_group(self):
+        ledger = _ledger()
+        result = top_n_per_group(ledger, group_by="category", n=2, currency="INR")
+        assert "error" not in result
+        for group, rows in result["groups"].items():
+            amounts = [Decimal(r["amount"]) for r in rows]
+            assert amounts == sorted(amounts, reverse=True)  # each group's own rows are ranked
+            assert len(rows) <= 2
+            assert [r["rank"] for r in rows] == list(range(1, len(rows) + 1))
+
+    def test_cross_checked_against_search_transactions_for_one_group(self):
+        # the top-2 Dining rows here must match what search_transactions itself would
+        # return for that same filter — never a second, independently-computed ranking
+        ledger = _ledger()
+        result = top_n_per_group(ledger, group_by="category", n=2, currency="INR")
+        expected = search_transactions(
+            ledger, category="Dining", currency="INR", sort_by="amount_desc", limit=2
+        ).results
+        actual = result["groups"]["Dining"]
+        assert [r["amount"] for r in actual] == [e.amount for e in expected]
+        assert [r["transaction_id"] for r in actual] == [e.transaction_id for e in expected]
+
+    def test_multi_currency_without_scoping_returns_an_error(self):
+        ledger = _ledger()
+        result = top_n_per_group(ledger, group_by="category", n=5)
+        assert "error" in result
+
+    def test_unrecognized_group_by_returns_error(self):
+        ledger = _ledger()
+        result = top_n_per_group(ledger, group_by="account", n=5, currency="INR")
+        assert "error" in result
+
+    def test_n_less_than_one_returns_error(self):
+        ledger = _ledger()
+        result = top_n_per_group(ledger, group_by="category", n=0, currency="INR")
+        assert "error" in result
+
+    def test_no_matching_transactions_returns_error(self):
+        ledger = _ledger()
+        result = top_n_per_group(
+            ledger, group_by="category", n=5, currency="INR",
+            date_from=date(2099, 1, 1), date_to=date(2099, 12, 31),
+        )
+        assert "error" in result
+
+
+class TestGenerateDashboard:
+    """generate_dashboard combines generate_chart + top_n_per_group — never a third,
+    separately-computed source of numbers."""
+
+    @pytest.fixture(autouse=True)
+    def _use_tmp_charts_dir(self, tmp_path, monkeypatch):
+        import statement_agent.agent.tools as tools_module
+
+        monkeypatch.setattr(tools_module, "_CHARTS_DIR", str(tmp_path / "charts"))
+
+    def test_returns_both_a_real_chart_and_a_table(self):
+        ledger = _ledger()
+        result = generate_dashboard(ledger, group_by="category", top_n=3, currency="INR")
+        assert "error" not in result
+        assert os.path.exists(result["chart_path"])
+        assert result["table_rows"]
+        assert result["table_truncated"] is False
+
+    def test_chart_data_matches_generate_chart_exactly(self):
+        ledger = _ledger()
+        dashboard = generate_dashboard(ledger, group_by="category", top_n=3, currency="INR")
+        chart = generate_chart(ledger, chart_type="bar", group_by="category", currency="INR")
+        assert dashboard["chart_data"] == chart["data"]
+
+    def test_table_rows_match_top_n_per_group_exactly(self):
+        ledger = _ledger()
+        dashboard = generate_dashboard(ledger, group_by="category", top_n=3, currency="INR")
+        table = top_n_per_group(ledger, group_by="category", n=3, currency="INR")
+        expected_rows = [
+            {"group": group, **row} for group, rows in table["groups"].items() for row in rows
+        ]
+        # order-independent comparison — both are built from the same dict iteration,
+        # but the point being verified is content equality, not incidental ordering
+        key = lambda r: (r["group"], r["rank"])
+        assert sorted(dashboard["table_rows"], key=key) == sorted(expected_rows, key=key)
+
+    def test_multi_currency_without_scoping_returns_an_error(self):
+        ledger = _ledger()
+        result = generate_dashboard(ledger, group_by="category", top_n=3)
+        assert "error" in result
 
 
 class TestSearchTransactionsTruncation:
