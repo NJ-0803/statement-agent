@@ -477,18 +477,55 @@ def get_sources(ledger: list[Transaction], transaction_ids: list[str]) -> Search
     )
 
 
+def _iter_year_months(start: date, end: date):
+    y, m = start.year, start.month
+    while (y, m) <= (end.year, end.month):
+        yield y, m
+        m += 1
+        if m == 13:
+            m = 1
+            y += 1
+
+
 def dataset_coverage(ledger: list[Transaction]) -> dict:
     """What date range and currencies the ledger actually covers — used to answer
     'insufficient information' honestly instead of guessing about a period with no data.
+
+    `coverage_gaps` lists contiguous calendar-month ranges with ZERO transactions,
+    strictly BETWEEN the ledger's own min and max date. Added because min_date/max_date
+    alone can't distinguish "full coverage" from "a missing quarter of statements" — a
+    ledger spanning January to December with April-June never uploaded would report
+    min=Jan, max=Dec either way, which looks like a complete year. This never flags
+    anything before min_date or after max_date — that's not a gap, it's just outside
+    the ledger's coverage, which min_date/max_date already disclose honestly on their own.
     """
     dated = [t.transaction_date for t in ledger if t.transaction_date is not None]
     if not dated:
-        return {"min_date": None, "max_date": None, "currencies": []}
+        return {"min_date": None, "max_date": None, "currencies": [], "transaction_count": 0, "coverage_gaps": []}
+
+    min_d, max_d = min(dated), max(dated)
+    present_months = {(d.year, d.month) for d in dated}
+
+    gaps: list[dict] = []
+    gap_start: str | None = None
+    prev_y = prev_m = None
+    for y, m in _iter_year_months(min_d, max_d):
+        if (y, m) in present_months:
+            if gap_start is not None:
+                gaps.append({"start": gap_start, "end": f"{prev_y:04d}-{prev_m:02d}"})
+                gap_start = None
+        elif gap_start is None:
+            gap_start = f"{y:04d}-{m:02d}"
+        prev_y, prev_m = y, m
+    if gap_start is not None:
+        gaps.append({"start": gap_start, "end": f"{prev_y:04d}-{prev_m:02d}"})
+
     return {
-        "min_date": min(dated).isoformat(),
-        "max_date": max(dated).isoformat(),
+        "min_date": min_d.isoformat(),
+        "max_date": max_d.isoformat(),
         "currencies": sorted({t.currency for t in ledger}),
         "transaction_count": len(ledger),
+        "coverage_gaps": gaps,
     }
 
 

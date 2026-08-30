@@ -75,7 +75,7 @@ thin wrapper over the exact same `Store`/`run_agent()` the CLI uses — no separ
 python -m pytest tests/ -v
 ```
 
-216 tests, all runnable offline with no API key — they cover normalization (currency/date parsing),
+223 tests, all runnable offline with no API key — they cover normalization (currency/date parsing),
 PDF/CSV extraction (including the injection-defense and duplicate-detection tests described below),
 resolution (categorization, duplicates, reconciliation, anomaly detection), the query/aggregation
 tools, and the answer verifier's grounding/provenance checks. See `DECISIONS.md` §11 for the three real
@@ -144,6 +144,11 @@ runs as part of `pytest tests/` via `tests/test_gold_eval.py`, one test per case
   transaction row in the first place; see `DECISIONS.md` §6), not just via a system-prompt request.
 - Say "I don't have enough information" when the ledger doesn't cover the question (e.g. a date range
   outside every statement's period) rather than estimating.
+- Detect internal coverage gaps, not just outer date bounds — a quarter of statements never uploaded
+  would otherwise look identical to full coverage; a question overlapping a detected gap gets an explicit
+  caveat instead of a total that quietly looks complete.
+- Process a multi-page scanned document's vision-OCR fallback concurrently (bounded, with retry/backoff
+  on transient failures) rather than one page at a time with no retry.
 - Log its own reasoning, not just tool names and inputs — every tool call carries a one-sentence "why"
   from the model alongside it, and the final answer carries a separate `final_reasoning`, both available
   via `--trace`, but never fed into the verifier's grounding checks (which only ever inspect actual tool

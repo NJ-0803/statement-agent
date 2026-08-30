@@ -247,22 +247,37 @@ against whether the referenced detail literally appears in the user's own messag
 genuinely different, fuzzier piece of work than the decimal check, not a natural extension of it. Not
 attempted yet; scoped out explicitly rather than bolted on half-working.
 
-**Where scale would erode confidence, discussed before it's built (`DECISIONS.md` §23).** Three concrete
-risks identified for a corpus of years, not months — ranked by how dangerous each actually is:
-- `detect_anomalies`'s single global median/MAD baseline goes stale across years of changing spending
-  patterns, with no caveat attached when it does (Tier 1 — silent false confidence).
-- `dataset_coverage` reports only outer min/max bounds, not gaps — a missing quarter of statements would
-  look like full coverage (Tier 1 — silent false confidence, and the cheapest fix of the three: a small,
-  bounded addition to a function that already exists).
+**Where scale would erode confidence, discussed before most of it was built (`DECISIONS.md` §23–§24).**
+Concrete risks identified for a corpus of years, not months — ranked by how dangerous each actually is,
+and updated as two of them got built on explicit direction:
+
+- **`dataset_coverage` gap detection — built.** Was Tier 1 (silent false confidence): min/max bounds alone
+  made a missing quarter of statements look like full coverage. Now reports `coverage_gaps` — contiguous
+  calendar-month ranges with zero transactions inside the ledger's own date range — and a new prompt rule
+  (4e) requires disclosing an overlapping gap as a floor. See `DECISIONS.md` §24.
+- **Ingestion throughput — built.** Multi-page vision-OCR extraction now runs concurrently (bounded at 4
+  workers) with retry/backoff on transient failures only, instead of a sequential loop with no retry at
+  all. Honestly caveated: this dataset has no document with 2+ pages needing vision, so the concurrent
+  *dispatch* path has never been exercised at real multi-page volume — only the retry logic itself is
+  thoroughly tested offline. See `DECISIONS.md` §24.
+- **`detect_anomalies`'s baseline — still open, and the risk was mischaracterized before checking the code.**
+  Not actually one global baseline blended across the whole ledger's history, as first described — it's
+  scoped *per document* already (`resolve_all` runs once per statement). The real problem is closer to the
+  opposite: a light-activity statement produces an unstable baseline from a tiny sample, and there's no
+  cross-document view of a person's broader spending pattern, unlike duplicate detection which already has
+  one (`detect_cross_document_duplicates`). The right fix mirrors that exact existing pattern — a
+  `detect_cross_document_anomalies` pass over the whole ledger, windowed (calendar-month buckets merged
+  until a minimum sample size is met, to avoid reintroducing the O(n²) risk a naive continuous sliding
+  window would have) rather than either today's per-document scope or a true global blend. Not built —
+  this changes computed z-scores on the *current* dataset too, not just future data, and needs verification
+  against the existing Grandeur Jewellers/Croma/GoIndigo outlier flags before shipping; deferred on
+  explicit direction rather than rushed.
 - Duplicate-detection tolerance windows were shaped for this dataset's clean synthetic timing, not
-  validated against real multi-year billing-cycle noise (Tier 1).
+  validated against real multi-year billing-cycle noise (Tier 1, still open).
 - Category-keyword drift, the reimbursement gap, and FX-file staleness all degrade gracefully — already
   honestly disclosed via existing caveat mechanisms, just increasingly less useful over time (Tier 2).
 - `MAX_TOOL_ITERATIONS=12` would block a genuinely complex multi-year trend question — fails safe (no
   answer) rather than silently wrong (Tier 3).
-
-None of Tier 1–3 is built; this section exists so the reasoning behind prioritizing `dataset_coverage`'s
-gap detection first (if real multi-year data ever arrives) doesn't need to be re-derived from scratch.
 
 ---
 

@@ -163,7 +163,15 @@ TOOL_SCHEMAS = [
     },
     {
         "name": "dataset_coverage",
-        "description": "Returns the actual date range and currencies present in the ledger. Call this before answering any question about a specific time period, to check the ledger actually has data for it.",
+        "description": (
+            "Returns the actual date range and currencies present in the ledger. Call this before "
+            "answering any question about a specific time period, to check the ledger actually has data "
+            "for it. Also returns `coverage_gaps` — contiguous calendar-month ranges with ZERO "
+            "transactions strictly between min_date and max_date (e.g. statements never uploaded for a "
+            "quarter). If a question's date range overlaps a gap, disclose it explicitly — a total "
+            "computed across a silent gap is a floor, not a complete figure, the same way an "
+            "uncategorized-transaction count is."
+        ),
         "input_schema": {"type": "object", "properties": {}},
     },
     {

@@ -101,6 +101,12 @@ month last year. Default to comparing against the immediately preceding calendar
 "last_month" vs "this_month") and explicitly state that this is the comparison you're making — never \
 pick a silent reference period.
 
+4e. dataset_coverage's `coverage_gaps` lists calendar months with zero transactions inside the ledger's \
+own min/max date range — e.g. statements that were simply never uploaded for a quarter. min_date/max_date \
+alone can make that look like full coverage even though it isn't. If a question's date range overlaps a \
+gap, say so explicitly and treat any total computed across it as a floor, not a complete figure — the \
+same discipline as an uncategorized-transaction count (rule 6a).
+
 5. Currency is never combined into a single number. If spend spans INR and USD, report them separately. \
 aggregate_spending already does this for you — never manually add amounts across currencies.
 

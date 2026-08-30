@@ -173,6 +173,18 @@ identical, so it's one tested code path instead of two that could quietly drift 
 rendering one of this dataset's own scanned pages out to a standalone PNG and running it through the
 image path: identical output to running the same page through the PDF path.
 
+**Why multi-page vision extraction runs concurrently with retry, not one page at a time.** A PDF needing
+vision fallback on several pages now fires up to 4 concurrent requests (`ThreadPoolExecutor`, one shared
+`anthropic.Anthropic()` client) instead of a plain sequential loop, and every call retries with
+exponential backoff on transient failures only (`RateLimitError`, `InternalServerError`,
+`ServiceUnavailableError`, `OverloadedError`, connection/timeout errors — never `BadRequestError` or
+similar, which fail identically on retry). Results are gathered via `as_completed`, in whatever order
+pages finish, not submission order — safe because the existing stable sort-by-`source.page` (added for
+`extraction_sequence`) already re-establishes correct page order downstream regardless. This dataset has
+no document with more than one page needing vision, so the concurrent dispatch itself is untested at real
+multi-page volume; the retry logic is fully unit-tested offline (`tests/test_pdf_vision.py`) and a full
+real ingest was re-verified to produce identical output afterward. See `DECISIONS.md` §24.
+
 ### 2.4 Resolution (`resolve.py`)
 
 **What, in the order it runs:** economic-type refinement (keyword rules upgrading the generic
@@ -363,7 +375,7 @@ Everything the model can do is one of these. Ten return data; the eleventh ends 
 
 | Tool | Purpose | Never does |
 |---|---|---|
-| `dataset_coverage` | Actual min/max date and currencies in the ledger | Guess at coverage the ledger doesn't have |
+| `dataset_coverage` | Actual min/max date and currencies in the ledger, plus `coverage_gaps` — internal calendar-month silences (e.g. a quarter never uploaded) that min/max alone would hide | Guess at coverage the ledger doesn't have, or treat a total spanning a gap as complete |
 | `resolve_period` | Turns `"last_quarter"`, `"last_month"`, `"2025-Q2"` etc. into exact ISO start/end dates, correctly handling the year-boundary case | Let the model compute a date range by hand |
 | `resolve_date` | Resolves ONE raw date string the same way ambiguous document dates are resolved at ingestion (§2.4) — flags `assumption`/`confidence<1.0` when a DD/MM-vs-MM/DD guess was needed | Let the model silently guess which convention a date like "05/07/2026" uses |
 | `list_documents` | Every source file, its declared account/currency/period, and any ingest-time `warnings` (security flags, structural anomalies) | Require a bank name to appear as a merchant string to be findable |

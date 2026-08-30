@@ -10,6 +10,12 @@ vision OCR errors out (no credits, network issue, etc.) that page just
 contributes zero transactions and a warning, rather than taking down ingestion
 for the whole folder. A page nobody could read becomes INSUFFICIENT_INFORMATION
 at answer time, never a silently wrong total.
+
+A PDF with multiple pages needing vision fallback processes them concurrently
+(bounded at 4 workers) with retry/backoff on transient failures (pdf_vision.py's
+_with_retry) — this dataset never exercises more than one vision page per
+document, so the retry path is unit-tested directly (tests/test_pdf_vision.py)
+rather than proven end-to-end at real multi-page volume.
 """
 
 from __future__ import annotations
@@ -74,11 +80,34 @@ def ingest_file(path: str, store: Store, *, attempt_vision: bool = True) -> Inge
         vision_pages = [p for p in page_quality if p.needs_vision]
 
         if vision_pages and attempt_vision:
-            from .pdf_vision import vision_extract_page
+            from concurrent.futures import ThreadPoolExecutor, as_completed
 
-            for pq in vision_pages:
+            import anthropic
+
+            from .pdf_vision import _with_retry, vision_extract_page
+
+            # One shared client, reused across concurrent calls (the SDK's client is
+            # thread-safe for concurrent requests) rather than a fresh client per page —
+            # matters more as page count grows, not at this dataset's scale. Bounded at 4
+            # concurrent requests regardless of how many pages need vision, so a large,
+            # heavily-scanned document doesn't fire an unbounded burst of API calls at once.
+            client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+
+            def _extract_one(pq):
                 try:
-                    vresult = vision_extract_page(path, pq.page_index, doc)
+                    return pq, _with_retry(lambda: vision_extract_page(path, pq.page_index, doc, client=client)), None
+                except Exception as e:  # noqa: BLE001 - one page's failure must not crash the whole ingest run
+                    return pq, None, e
+
+            with ThreadPoolExecutor(max_workers=min(4, len(vision_pages))) as executor:
+                futures = [executor.submit(_extract_one, pq) for pq in vision_pages]
+                for future in as_completed(futures):
+                    pq, vresult, error = future.result()
+                    if error is not None:
+                        warnings.append(
+                            f"vision OCR failed on page {pq.page_index + 1} ({pq.reason}): {type(error).__name__}: {error}"
+                        )
+                        continue
                     transactions.extend(vresult.transactions)
                     warnings.extend(vresult.warnings)
                     if vresult.statement_start_raw and not doc.statement_start:
@@ -86,10 +115,6 @@ def ingest_file(path: str, store: Store, *, attempt_vision: bool = True) -> Inge
                             f"vision reported statement period '{vresult.statement_start_raw}' to "
                             f"'{vresult.statement_end_raw}' but it could not be cross-checked against native extraction"
                         )
-                except Exception as e:  # noqa: BLE001 - API/network failures must not crash the whole ingest run
-                    warnings.append(
-                        f"vision OCR failed on page {pq.page_index + 1} ({pq.reason}): {type(e).__name__}: {e}"
-                    )
         elif vision_pages and not attempt_vision:
             for pq in vision_pages:
                 warnings.append(f"page {pq.page_index + 1} needs vision OCR ({pq.reason}) but vision was disabled for this run")
@@ -150,10 +175,10 @@ def _ingest_image(path: str, store: Store, *, attempt_vision: bool) -> IngestRep
     warnings: list[str] = []
 
     if attempt_vision:
-        from .pdf_vision import vision_extract_standalone_image
+        from .pdf_vision import _with_retry, vision_extract_standalone_image
 
         try:
-            vresult = vision_extract_standalone_image(path, doc)
+            vresult = _with_retry(lambda: vision_extract_standalone_image(path, doc))
             transactions.extend(vresult.transactions)
             warnings.extend(vresult.warnings)
             # a standalone image has no separate native pass to set these ahead of

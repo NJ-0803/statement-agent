@@ -1033,3 +1033,68 @@ highest-leverage fix — a small, bounded addition to a function that already ex
 "confidently wrong" hole rather than a "less useful" one. Not built yet — this section is the discussion
 and reasoning that would justify building it, kept here so the decision doesn't need to be re-derived from
 scratch later.
+
+---
+
+## 24. Building the scale fixes: two done, one corrected-and-deferred, on explicit direction
+
+Explicit instruction: build §23's #4 (`dataset_coverage` gap detection) and #5 (ingestion throughput),
+skip #3 (anomaly baseline) for now.
+
+**#4 — `dataset_coverage` now detects internal gaps, not just outer bounds.** New `coverage_gaps` field:
+contiguous calendar-month ranges with zero transactions strictly between `min_date` and `max_date`.
+Deliberately never flags anything *before* `min_date` or *after* `max_date` — that's not a gap, it's
+outside coverage, which `min_date`/`max_date` already disclose honestly on their own; conflating the two
+would make every ledger "have a gap" trivially. New prompt rule 4e requires disclosing an overlapping gap
+as a floor, same discipline as the uncategorized-transaction caveat (rule 6a). 5 new tests
+(`tests/test_tools.py::TestDatasetCoverage`), including a synthetic Jan/Feb/Jul/Dec ledger that verifies
+the exact gap boundaries (`{"start": "2025-03", "end": "2025-06"}`, `{"start": "2025-08", "end": "2025-11"}`)
+— confirmed zero gaps on the real dataset (all of May–July present in the no-vision test fixture; April is
+outside coverage there, not a gap, since `attempt_vision=False` skips the scanned Axis statement entirely).
+
+**#5 — vision-OCR extraction is now concurrent (bounded) with retry/backoff, not sequential-with-no-retry.**
+A PDF with multiple pages needing vision fallback previously processed them one at a time in a plain
+for-loop; now up to 4 pages run concurrently via `ThreadPoolExecutor`, sharing one `anthropic.Anthropic()`
+client (thread-safe for concurrent requests) rather than creating a fresh one per page. Each call is
+wrapped in a new `pdf_vision._with_retry()` helper — up to 3 attempts with exponential backoff (2s, 4s) —
+but *only* for genuinely transient failures (`RateLimitError`, `InternalServerError`,
+`ServiceUnavailableError`, `OverloadedError`, `APIConnectionError`, `APITimeoutError`); explicitly never
+for `BadRequestError`/`AuthenticationError`/etc., since those fail identically on retry and would just
+burn time and API calls for nothing. Results are collected via `as_completed` (whichever page finishes
+first), which is safe because the existing stable sort-by-`source.page` (added for `extraction_sequence`,
+§20) already re-establishes correct page order downstream regardless of completion order — the two fixes
+compose cleanly without new sequencing logic.
+
+Applied to both the multi-page PDF path (concurrent) and the standalone-image path (retry only — one
+image, nothing to parallelize).
+
+**Honestly scoped, not claimed as proven at real volume:** this dataset has exactly one document with
+exactly one page needing vision (the scanned Axis statement) — there is no fixture here with 2+ vision
+pages in a single document, so the *concurrent dispatch* path has never been exercised at real
+multi-page volume, only at `max_workers=min(4, 1)=1`. What *is* thoroughly tested, offline, with no live
+API calls: the retry helper itself — succeeds after a transient failure, gives up after exactly
+`max_attempts` and re-raises the last error, and never retries a non-retryable error even once
+(`tests/test_pdf_vision.py`, 4 tests, using a fake `anthropic.RateLimitError`/`BadRequestError` and a
+mocked `time.sleep`). A full real ingest with vision enabled was re-run afterward and produced identical
+output to before this change (91 transactions, same warnings) — proving no regression on the one path
+this dataset can actually exercise, not proving the concurrent path is correct at higher page counts.
+
+**#3 — deferred, and my own earlier framing of the risk was partly wrong.** Re-reading `detect_anomalies`
+carefully before touching it: it is NOT a single baseline blended across the *entire* ledger's history —
+`resolve_all(doc, transactions)` is called once *per document* (per `pipeline.py`'s three call sites), so
+each statement's anomaly baseline is already scoped to just that one document's own transactions, not
+years of blended history. §23's "stale multi-year baseline" framing was therefore not quite the real
+shape of the risk. The *actual* problem this per-document scoping creates is closer to the opposite: a
+light-activity statement (few transactions) produces an unstable, noisy median/MAD from a tiny sample, and
+nothing currently gives an anomaly baseline a *cross-document* view of a person's own broader spending
+pattern the way `detect_cross_document_duplicates` already does for duplicates. Fixing this properly means
+mirroring that exact existing pattern — a `detect_cross_document_anomalies` pass run once over the whole
+ledger after all documents are ingested (same shape as `pipeline.py`'s cross-document dedup call site) —
+with a windowing scheme (calendar-month buckets, merging small buckets until a minimum sample size is
+met, to avoid the O(n²) risk a naive true-continuous sliding window would reintroduce) rather than either
+today's per-document scope or a single global blend. Not built: this is a real behavior change (would
+alter computed z-scores on the *current* dataset too, not just future data) that needs to be verified
+against the existing Grandeur Jewellers/Croma/GoIndigo outlier flags before shipping, and was explicitly
+deferred this round rather than rushed.
+
+223/223 tests passing.

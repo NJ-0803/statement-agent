@@ -13,9 +13,27 @@ from statement_agent.agent.tools import (
     summarize_statement,
 )
 from statement_agent.ingest.pipeline import ingest_folder
+from statement_agent.schema import Direction, EconomicType, Transaction
 from statement_agent.store import Store
 
 DATASET = os.path.join(os.path.dirname(os.path.dirname(__file__)), "dataset_public")
+
+
+def _make_txn(txn_date: date, *, amount: str = "100.00", merchant: str = "TEST MERCHANT") -> Transaction:
+    import uuid
+
+    return Transaction(
+        transaction_id=str(uuid.uuid4()),
+        document_id="doc1",
+        transaction_date=txn_date,
+        date_raw=txn_date.isoformat(),
+        description_raw=merchant,
+        merchant_raw=merchant,
+        amount=Decimal(amount),
+        currency="INR",
+        direction=Direction.DEBIT,
+        economic_type=EconomicType.PURCHASE,
+    )
 
 
 def _ledger():
@@ -422,3 +440,34 @@ class TestDatasetCoverage:
         ledger = _ledger()
         coverage = dataset_coverage(ledger)
         assert coverage["max_date"] < "2025-12-01"
+
+    def test_real_dataset_has_no_internal_gaps(self):
+        # May-July are all present in this fixture (attempt_vision=False skips the
+        # scanned April Axis statement entirely, so April is outside coverage, not a gap)
+        ledger = _ledger()
+        coverage = dataset_coverage(ledger)
+        assert coverage["coverage_gaps"] == []
+
+    def test_a_missing_quarter_is_detected_as_a_gap(self):
+        # the real case this exists for: min/max alone would make Jan-Dec look like full
+        # coverage even with Apr-Jun never uploaded
+        txns = [
+            _make_txn(date(2025, 1, 15)),
+            _make_txn(date(2025, 2, 10)),
+            _make_txn(date(2025, 7, 20)),
+            _make_txn(date(2025, 12, 5)),
+        ]
+        coverage = dataset_coverage(txns)
+        assert coverage["min_date"] == "2025-01-15"
+        assert coverage["max_date"] == "2025-12-05"
+        assert coverage["coverage_gaps"] == [
+            {"start": "2025-03", "end": "2025-06"},
+            {"start": "2025-08", "end": "2025-11"},
+        ]
+
+    def test_no_gap_reported_for_dates_outside_min_max(self):
+        # a gap before the first or after the last transaction isn't a "gap" —
+        # that's just outside the ledger's coverage, already disclosed via min/max
+        txns = [_make_txn(date(2025, 6, 1)), _make_txn(date(2025, 6, 15))]
+        coverage = dataset_coverage(txns)
+        assert coverage["coverage_gaps"] == []

@@ -197,6 +197,51 @@ def _vision_extract_from_image_bytes(
     return result
 
 
+_RETRYABLE_EXCEPTIONS: tuple[type[Exception], ...] | None = None
+
+
+def _retryable_exceptions() -> tuple[type[Exception], ...]:
+    """Transient failures worth retrying — rate limits, overload, and connection/
+    timeout issues. Deliberately excludes BadRequestError/AuthenticationError/etc:
+    those fail identically on retry, so retrying just burns time and API calls
+    for nothing. Imported lazily since `anthropic` is itself a lazy/optional
+    import throughout this module.
+    """
+    global _RETRYABLE_EXCEPTIONS
+    if _RETRYABLE_EXCEPTIONS is None:
+        import anthropic
+
+        _RETRYABLE_EXCEPTIONS = (
+            anthropic.RateLimitError,
+            anthropic.InternalServerError,
+            anthropic.ServiceUnavailableError,
+            anthropic.OverloadedError,
+            anthropic.APIConnectionError,
+            anthropic.APITimeoutError,
+        )
+    return _RETRYABLE_EXCEPTIONS
+
+
+def _with_retry(fn, *, max_attempts: int = 3, base_delay: float = 2.0):
+    """Retries a vision API call with exponential backoff (2s, 4s) on transient
+    failures only. A page that fails after all attempts still just contributes a
+    warning at the call site — this only reduces how often a real page is lost to
+    a rate limit or a transient network blip, it doesn't change the "never crash
+    ingestion over one bad page" guarantee.
+    """
+    import time
+
+    last_exc: Exception | None = None
+    for attempt in range(max_attempts):
+        try:
+            return fn()
+        except _retryable_exceptions() as e:
+            last_exc = e
+            if attempt < max_attempts - 1:
+                time.sleep(base_delay * (2**attempt))
+    raise last_exc
+
+
 def vision_extract_page(path: str, page_index: int, document: Document, *, client=None) -> VisionPageResult:
     png_bytes = render_page_png(path, page_index)
     return _vision_extract_from_image_bytes(
