@@ -133,6 +133,78 @@ class TestAskEndpointShapesRunAgentResultCorrectly:
         assert "error" in res.get_json()
 
 
+class TestUploadEndpoint:
+    def test_no_files_returns_400(self, empty_db_path, tmp_path):
+        client = create_app(db_path=empty_db_path, upload_dir=str(tmp_path / "uploads")).test_client()
+        res = client.post("/api/upload", data={})
+        assert res.status_code == 400
+
+    def test_uploading_a_real_csv_ingests_it_and_creates_the_ledger(self, empty_db_path, tmp_path):
+        # empty_db_path deliberately doesn't exist yet — the upload endpoint must be
+        # able to bootstrap a brand-new ledger from zero, not just add to an existing one
+        client = create_app(db_path=empty_db_path, upload_dir=str(tmp_path / "uploads")).test_client()
+        csv_path = os.path.join(DATASET, "expenses", "personal_expenses_q2_2025.csv")
+        with open(csv_path, "rb") as f:
+            res = client.post(
+                "/api/upload",
+                data={"files": (f, "personal_expenses_q2_2025.csv")},
+                content_type="multipart/form-data",
+            )
+        assert res.status_code == 200
+        data = res.get_json()
+        assert len(data["results"]) == 1
+        assert data["results"][0]["status"] == "ingested"
+        assert data["results"][0]["transaction_count"] == 6
+
+        status = client.get("/api/status").get_json()
+        assert status["ready"] is True
+        assert status["transaction_count"] == 6
+
+    def test_uploading_the_same_file_twice_is_reported_as_duplicate_not_double_counted(self, empty_db_path, tmp_path):
+        client = create_app(db_path=empty_db_path, upload_dir=str(tmp_path / "uploads")).test_client()
+        csv_path = os.path.join(DATASET, "expenses", "personal_expenses_q2_2025.csv")
+
+        for _ in range(2):
+            with open(csv_path, "rb") as f:
+                res = client.post(
+                    "/api/upload",
+                    data={"files": (f, "personal_expenses_q2_2025.csv")},
+                    content_type="multipart/form-data",
+                )
+
+        data = res.get_json()
+        assert data["results"][0]["status"] == "skipped_duplicate"
+        status = client.get("/api/status").get_json()
+        assert status["transaction_count"] == 6  # not 12 — the second upload never double-counted
+
+    def test_unsupported_file_type_is_reported_not_silently_dropped(self, empty_db_path, tmp_path):
+        client = create_app(db_path=empty_db_path, upload_dir=str(tmp_path / "uploads")).test_client()
+        res = client.post(
+            "/api/upload",
+            data={"files": (__import__("io").BytesIO(b"not a real statement"), "notes.txt")},
+            content_type="multipart/form-data",
+        )
+        assert res.status_code == 200
+        assert res.get_json()["results"][0]["status"] == "skipped_unsupported"
+
+    def test_path_traversal_filename_is_sanitized(self, empty_db_path, tmp_path):
+        # secure_filename must strip any directory-escaping content from the filename
+        # before it's ever used to build a path on disk
+        upload_dir = tmp_path / "uploads"
+        client = create_app(db_path=empty_db_path, upload_dir=str(upload_dir)).test_client()
+        client.post(
+            "/api/upload",
+            data={"files": (__import__("io").BytesIO(b"date,merchant,amount\n"), "../../etc/evil.csv")},
+            content_type="multipart/form-data",
+        )
+        # nothing should have escaped the upload directory, and no filename should
+        # retain any directory-traversal content
+        assert not (tmp_path.parent.parent / "etc" / "evil.csv").exists()
+        for _, _, files in os.walk(upload_dir):
+            for fn in files:
+                assert ".." not in fn
+
+
 class _FakeResponse:
     status_code = 400
     headers = {}

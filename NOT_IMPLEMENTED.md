@@ -278,6 +278,16 @@ and updated as two of them got built on explicit direction:
   honestly disclosed via existing caveat mechanisms, just increasingly less useful over time (Tier 2).
 - `MAX_TOOL_ITERATIONS=12` would block a genuinely complex multi-year trend question — fails safe (no
   answer) rather than silently wrong (Tier 3).
+- **New Tier 1 finding, from testing against a real external dataset (`DECISIONS.md` §25): nothing in the
+  schema or tools is account-aware.** Every tool assumes the ledger represents one person's finances.
+  Pointed at a ledger that actually blends multiple accounts (confirmed directly — Kaggle's Financial
+  Anomaly Data has 16 distinct `AccountID` values in one file), `aggregate_spending`'s "total spend"
+  silently sums across accounts with no caveat attached — unlike the category-taxonomy gap, this one
+  doesn't degrade gracefully, it just looks like a normal, confidently-stated number. Not fixed: the
+  minimal version is data-prep (filter ingestion to one account), the real version is a schema/tool
+  extension (an `account_id` field threaded through search/aggregate, surfaced when more than one is
+  present) — recorded here rather than guessed at, since building it against one synthetic example risks
+  the same "unverified matcher" trap as §A.
 
 ---
 

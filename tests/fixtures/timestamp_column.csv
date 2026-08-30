@@ -1,0 +1,4 @@
+Timestamp,TransactionID,AccountID,Amount,Merchant,TransactionType,Location
+01-01-2023 08:00,TXN1127,ACC4,95071.92,MerchantH,Purchase,Tokyo
+01-01-2023 08:01,TXN1639,ACC10,15607.89,MerchantH,Purchase,London
+02-01-2023 09:15,TXN1640,ACC8,65092.34,MerchantE,Withdrawal,London

@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from ..normalize import DocumentDateResolver, normalize_amount
 from ..schema import Direction, Document, EconomicType, ExtractionMethod, SourceRef, Transaction
 
-_DATE_ALIASES = {"date", "txn date", "transaction date", "posted date"}
+_DATE_ALIASES = {"date", "txn date", "transaction date", "posted date", "timestamp"}
 _DESC_ALIASES = {"details", "merchant", "description", "narration", "particulars"}
 _AMOUNT_ALIASES = {"amount", "amt", "value"}
 _CURRENCY_ALIASES = {"currency", "ccy"}

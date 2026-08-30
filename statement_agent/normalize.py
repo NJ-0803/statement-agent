@@ -119,6 +119,17 @@ _TEXTUAL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# A trailing time-of-day (e.g. "01-01-2023 08:00" or an ISO "2023-01-01 08:00:00") — found
+# necessary against a real downloaded dataset whose date column was a full timestamp, not a
+# bare date. None of the three patterns above need the time part (the schema is date-only),
+# and _NUMERIC_SLASH_RE already accepts both '/' and '-' as separators — the trailing time was
+# the only thing breaking the full-string match, not the date portion itself.
+_TRAILING_TIME_RE = re.compile(r"\s+\d{1,2}:\d{2}(:\d{2})?\s*$")
+
+
+def _strip_trailing_time(raw: str) -> str:
+    return _TRAILING_TIME_RE.sub("", raw) if raw else raw
+
 _MONTH_LOOKUP = {
     name: i + 1
     for i, names in enumerate(
@@ -162,7 +173,7 @@ class DocumentDateResolver:
         self._convention: str | None = None  # "DMY" or "MDY", once resolved
 
     def observe(self, raw: str) -> None:
-        m = _NUMERIC_SLASH_RE.match(raw or "")
+        m = _NUMERIC_SLASH_RE.match(_strip_trailing_time(raw or ""))
         if m:
             a, b, year = int(m.group(1)), int(m.group(2)), int(m.group(3))
             self._numeric_dates.append((a, b, year))
@@ -184,12 +195,17 @@ class DocumentDateResolver:
         if not text:
             return ParsedDate(None, raw, 0.0, "empty date")
 
-        m = _ISO_RE.match(text)
+        # Matched against a time-stripped copy only — date_raw (below, via `text`) still
+        # preserves the original full string (e.g. "01-01-2023 08:00") for citation, since
+        # the schema itself is date-only and none of these three patterns need the time part.
+        match_text = _strip_trailing_time(text)
+
+        m = _ISO_RE.match(match_text)
         if m:
             y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
             return _safe_date(y, mo, d, text, confidence=1.0)
 
-        m = _TEXTUAL_RE.match(text)
+        m = _TEXTUAL_RE.match(match_text)
         if m:
             day_before, month_name, day_after, year = m.groups()
             day = day_before or day_after
@@ -197,7 +213,7 @@ class DocumentDateResolver:
             if day and month:
                 return _safe_date(int(year), month, int(day), text, confidence=1.0)
 
-        m = _NUMERIC_SLASH_RE.match(text)
+        m = _NUMERIC_SLASH_RE.match(match_text)
         if m:
             a, b, year = int(m.group(1)), int(m.group(2)), int(m.group(3))
             if a > 12 and b <= 12:

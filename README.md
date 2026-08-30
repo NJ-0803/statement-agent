@@ -68,6 +68,8 @@ Opens on `http://127.0.0.1:5050` — a single-page dark-themed chat interface wi
 a live status bar (ledger stats, whether the API key is set), and each answer's verification badge,
 amounts, caveats, and execution trace, same as the CLI. `--port` to use a different port. `serve` is a
 thin wrapper over the exact same `Store`/`run_agent()` the CLI uses — no separate logic to trust.
+An "Add statements" bar lets you upload PDFs/CSVs/XLSX/images directly from the browser and ingest them
+into the running ledger, instead of only via `cli ingest` from the terminal — see `DECISIONS.md` §26.
 
 ## Running the tests
 
@@ -75,7 +77,7 @@ thin wrapper over the exact same `Store`/`run_agent()` the CLI uses — no separ
 python -m pytest tests/ -v
 ```
 
-223 tests, all runnable offline with no API key — they cover normalization (currency/date parsing),
+235 tests, all runnable offline with no API key — they cover normalization (currency/date parsing),
 PDF/CSV extraction (including the injection-defense and duplicate-detection tests described below),
 resolution (categorization, duplicates, reconciliation, anomaly detection), the query/aggregation
 tools, and the answer verifier's grounding/provenance checks. See `DECISIONS.md` §11 for the three real

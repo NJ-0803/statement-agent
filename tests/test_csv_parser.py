@@ -55,3 +55,26 @@ class TestMalformedCsv:
 
         with pytest.raises(FileNotFoundError):
             parse_csv(os.path.join(FIXTURES, "does_not_exist.csv"))
+
+
+class TestTimestampColumnWithTrailingTime:
+    """A real downloaded dataset (Kaggle's Financial Anomaly Data) uses a "Timestamp"
+    header with "DD-MM-YYYY HH:MM" values — neither the column name nor the trailing
+    time-of-day were previously recognized, so every row would be rejected outright."""
+
+    def test_timestamp_header_is_recognized_as_the_date_column(self):
+        r = parse_csv(os.path.join(FIXTURES, "timestamp_column.csv"))
+        assert len(r.rejected_rows) == 0
+        assert len(r.transactions) == 3
+
+    def test_trailing_time_of_day_does_not_block_parsing(self):
+        r = parse_csv(os.path.join(FIXTURES, "timestamp_column.csv"))
+        first = r.transactions[0]
+        assert first.transaction_date.year == 2023
+        assert first.transaction_date.month == 1
+        assert first.transaction_date.day == 1
+
+    def test_merchant_column_still_recognized_alongside_timestamp(self):
+        r = parse_csv(os.path.join(FIXTURES, "timestamp_column.csv"))
+        assert r.transactions[0].merchant_raw == "MerchantH"
+        assert r.transactions[0].amount == Decimal("95071.92")

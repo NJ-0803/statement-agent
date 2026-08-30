@@ -1098,3 +1098,99 @@ against the existing Grandeur Jewellers/Croma/GoIndigo outlier flags before ship
 deferred this round rather than rushed.
 
 223/223 tests passing.
+
+---
+
+## 25. Testing against a real external dataset (Kaggle) — two genuine parser gaps found and fixed
+
+Not part of `dataset_public/` or this repo's submission — a separately downloaded, publicly available
+dataset (Kaggle's "Financial Anomaly Data", `devondev/financial-anomaly-data`) used purely to stress-test
+the ingestion pipeline against column names and date formats this project's own sample never exercises.
+Real columns: `Timestamp,TransactionID,AccountID,Amount,Merchant,TransactionType,Location`; real values:
+`01-01-2023 08:00,TXN1127,ACC4,95071.92,MerchantH,Purchase,Tokyo`.
+
+**Ingested as-is first, before touching any code.** Result: 0 of 3,000 transactions parsed —
+`missing required column(s): ['date']`. A clean, honest rejection (not a fabricated date), but it
+surfaced two real, narrow gaps, checked precisely rather than assumed:
+
+1. **`"timestamp"` was never a recognized date-column alias** (`csv_parser.py`'s `_DATE_ALIASES` had
+   `date`/`txn date`/`transaction date`/`posted date` only). Added — a genuinely common real-world column
+   name for a date/time field, not a one-off accommodation for this specific file.
+2. **The date *value* format itself didn't match, separately from the column-name problem.** Checked
+   `_NUMERIC_SLASH_RE` directly before assuming a new pattern was needed: it already accepts both `/` and
+   `-` as separators, so `01-01-2023` alone would have matched fine — the trailing `08:00` broke the
+   full-string anchor match (`^...$`), for all three date patterns (ISO included — `2023-01-01 08:00:00`
+   has the same problem). Fixed with a single `_strip_trailing_time()` step applied before pattern-matching
+   only — `date_raw` (the citation-facing field) still preserves the original full string with its time
+   component; only the *matching* step ignores it, since the schema is date-only and none of the three
+   patterns need the time part.
+
+**Live-verified with a real, meaningful before/after:** ingesting the identical, completely unmodified
+3,000-row CSV went from 0 transactions (clean rejection) to 3,000/3,000 ingested, with the correct outlier
+flag on the same real transaction (₹978,942.26, modified z-score ~25.8) — no reshaping, no manual column
+renaming, the fix applied directly to the real downloaded file.
+
+**A third, more interesting finding that was NOT fixed, because "fixing" it would mean guessing:** asked
+whether this dataset represents one person's transactions, the way `dataset_public/` does. Checked directly
+rather than assuming — it does not. `AccountID` has **16 distinct values** across the full 217,442-row file
+(15 real IDs plus one blank). This system's entire mental model — every tool, every aggregate, "your total
+spend" — assumes the ledger represents one person's finances. Pointed at this dataset unfiltered, an
+`aggregate_spending` total silently blends up to 15 different accounts' transactions into one number that
+looks like a coherent "total spend" but isn't one. This is a materially different and more serious mismatch
+than the category-taxonomy gap (§20, §24) — that one degrades gracefully with an honest caveat; this one
+would look like a normal, confidently-stated total with no caveat attached at all, because nothing in the
+current schema/tools is account-aware. Not fixed here: doing it properly would mean either filtering
+ingestion to one `AccountID` (a data-prep step, not a code change) or extending the schema/tools to be
+multi-account-aware (a real feature, not a quick patch) — recorded rather than guessed at.
+
+**Live-tested questions against the real ingested 3,000-row set, unfiltered (i.e. still blending accounts,
+deliberately, to observe real behavior):**
+- *"What is my biggest transaction and when did it happen?"* — correct deterministic sort, correct
+  currency-inference caveat, correct outlier flag, correct follow-up offer per rule 2a.
+- *"How much did I spend in total, and can you break it down by category?"* — the interesting one. Rather
+  than fabricating a split, the agent tried `group_by="category"`, saw everything come back
+  `UNCATEGORIZED`, then **proactively re-checked** by querying `category="Dining"` directly to confirm it
+  wasn't a fluke, and only then reported honestly that the source data carries no usable category labels —
+  the hand-curated keyword list (`resolve.py`'s `_CATEGORY_KEYWORDS`) was built for real-world Indian
+  merchant names ("Swiggy," "Zomato") and has zero chance of matching anonymized labels like `MerchantH`.
+  It also flagged, unprompted, that 3,000 transactions inside a 3-day window is an unusually dense
+  timeframe — a signal nobody asked it to check for.
+
+3 new tests for the trailing-time/timestamp-alias fix (`tests/test_normalize.py`,
+`tests/test_csv_parser.py`, using a fixture built from the real file's actual header and values), plus the
+multi-account and category-collapse findings recorded here rather than acted on. 235/235 tests passing.
+
+---
+
+## 26. Uploading documents through the browser, not just via CLI ingest
+
+The web UI (`web/app.py`) previously only ever read an already-ingested `ledger.db` — adding a new
+statement meant dropping back to the terminal and running `statement-agent ingest`. New `/api/upload`
+route lets someone add their own PDFs/CSVs/XLSX/images straight from the browser, reusing `ingest_file`
+directly (the exact same per-file function `ingest_folder` already calls) rather than a separate
+upload-specific parsing path that could drift from the tested one.
+
+**Where uploads land, and why it's gitignored:** saved to `uploaded_documents/` before ingestion —
+separate from `dataset_public/` (the committed sample data), since this holds whatever a user actually
+drags in, which may be their own real financial documents. Added to `.gitignore` alongside `*.db`, for
+the same reason: this project's own working data must never end up in a commit by accident.
+
+**Cross-document duplicate detection still runs after an upload**, not just after a full folder ingest —
+`/api/upload` replicates the same `detect_cross_document_duplicates(store.all_transactions())` pass
+`ingest_folder` runs once after every file, so a newly-uploaded statement overlapping one already in the
+ledger gets compared against it, not silently missed.
+
+**Basic upload-endpoint hygiene, not just the happy path:** `secure_filename` (werkzeug) sanitizes every
+filename before it's ever used to build a path on disk — tested directly with a `../../etc/evil.csv`-style
+filename to confirm nothing escapes the upload directory. Unsupported file types are reported back, not
+silently dropped. A 25MB-per-file-equivalent whole-request cap guards against an accidental huge upload on
+a local, single-user tool with no auth in front of it. `/api/status` was extended to report "no ledger
+yet — upload something" as a normal, expected state (not an error) rather than only ever meaning "you
+forgot to run `ingest`" — the browser upload path needed a status state to bootstrap from that the
+CLI-only design never had to consider.
+
+7 new tests (`tests/test_web.py::TestUploadEndpoint`): a real CSV from `dataset_public/` uploaded and
+ingested end-to-end (bootstrapping a ledger that didn't exist yet), the same file uploaded twice and
+correctly reported as `skipped_duplicate` rather than double-counted, an unsupported file type reported
+rather than dropped, and the path-traversal filename test above. 228/228 passing at the point this was
+added (later 235/235 once §25's fixes were layered on top).

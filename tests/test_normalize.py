@@ -136,6 +136,38 @@ class TestDateResolver:
         p = resolver.parse("not a date")
         assert p.value is None
 
+    def test_trailing_time_of_day_is_stripped_before_matching(self):
+        # the real case this exists for: a downloaded dataset's "Timestamp" column was
+        # "DD-MM-YYYY HH:MM" — the date part alone already matched (- is an accepted
+        # separator), only the trailing time broke the full-string anchor match.
+        # 13 > 12, so this date is unambiguous regardless of convention — isolates the
+        # trailing-time fix itself from the separate DD/MM-vs-MM/DD ambiguity question.
+        resolver = DocumentDateResolver()
+        p = resolver.parse("13-01-2023 08:00")
+        assert p.value == date(2023, 1, 13)
+        assert p.confidence == 1.0
+
+    def test_trailing_time_with_seconds_is_also_stripped(self):
+        resolver = DocumentDateResolver()
+        p = resolver.parse("2023-01-01 08:00:00")
+        assert p.value == date(2023, 1, 1)
+
+    def test_date_raw_still_preserves_the_original_timestamp_for_citation(self):
+        # date_raw (schema field this becomes) must show what the source actually said,
+        # not a silently-cleaned version — the time is only stripped for pattern-matching
+        resolver = DocumentDateResolver()
+        p = resolver.parse("01-01-2023 08:00")
+        assert p.raw == "01-01-2023 08:00"
+
+    def test_ambiguous_numeric_date_with_trailing_time_still_flags_the_assumption(self):
+        # stripping the time must not accidentally bypass the existing ambiguity/confidence
+        # handling for a genuinely ambiguous DD/MM-vs-MM/DD date
+        resolver = DocumentDateResolver()
+        p = resolver.parse("05/07/2025 14:30")
+        assert p.value == date(2025, 7, 5)  # DMY locale default
+        assert p.confidence < 1.0
+        assert "locale default" in p.assumption
+
 
 class TestDatePlausibility:
     def test_within_statement_period_is_plausible(self):

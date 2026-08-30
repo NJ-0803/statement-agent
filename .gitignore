@@ -7,3 +7,4 @@ __pycache__/
 ingest_cache/
 eval/report.md
 .DS_Store
+uploaded_documents/

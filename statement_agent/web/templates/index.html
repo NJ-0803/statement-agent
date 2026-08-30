@@ -135,6 +135,32 @@
   #chat::-webkit-scrollbar { width: 8px; }
   #chat::-webkit-scrollbar-thumb { background: var(--line); }
   #chat::-webkit-scrollbar-track { background: var(--ground); }
+  #upload-bar {
+    padding: 12px 28px; max-width: 800px; margin: 0 auto; width: 100%; background: var(--ground);
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap; border-bottom: 1px solid var(--line-soft);
+  }
+  #upload-bar .upload-label {
+    font-family: var(--display); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--faint);
+  }
+  #file-input { display: none; }
+  #upload-btn, #upload-go {
+    padding: 8px 14px; border: 1px solid var(--line); border-radius: 2px; background: var(--panel);
+    color: var(--dim); font-family: var(--display); font-size: 11px; font-weight: 600;
+    letter-spacing: 0.1em; text-transform: uppercase; cursor: pointer;
+  }
+  #upload-btn:hover, #upload-go:hover:not(:disabled) { border-color: var(--red); color: var(--ink); }
+  #upload-go { background: var(--red); color: var(--ground); border-color: var(--red); }
+  #upload-go:disabled { opacity: .4; cursor: default; filter: none; }
+  #file-list { font-size: 12px; color: var(--dim); }
+  #upload-results { max-width: 800px; margin: 0 auto; width: 100%; padding: 0 28px 14px; }
+  .upload-result {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px;
+    padding: 6px 9px; margin-top: 6px; border: 1px solid var(--line-soft); background: var(--panel-2);
+  }
+  .upload-result.ingested { color: var(--mint); border-color: var(--mint); }
+  .upload-result.skipped_duplicate, .upload-result.skipped_unsupported { color: var(--faint); }
+  .upload-result.failed { color: var(--red); border-color: var(--red); }
 </style>
 </head>
 <body>
@@ -145,6 +171,14 @@
     </div>
   </header>
   <div id="status-bar">Checking ledger status…</div>
+  <div id="upload-bar">
+    <span class="upload-label">Add statements:</span>
+    <input id="file-input" type="file" multiple accept=".pdf,.csv,.xlsx,.jpg,.jpeg,.png">
+    <button id="upload-btn" type="button">Choose files</button>
+    <span id="file-list"></span>
+    <button id="upload-go" type="button" disabled>Upload &amp; ingest</button>
+  </div>
+  <div id="upload-results"></div>
   <div class="examples" id="examples" hidden>
     <button class="example-q" data-q="What did I spend on dining in Q2 2025?">Dining spend in Q2 2025</button>
     <button class="example-q" data-q="Compare my grocery spending across months.">Compare grocery spending by month</button>
@@ -164,6 +198,11 @@ const input = document.getElementById('question');
 const sendBtn = document.getElementById('send');
 const statusBar = document.getElementById('status-bar');
 const examples = document.getElementById('examples');
+const fileInput = document.getElementById('file-input');
+const uploadChooseBtn = document.getElementById('upload-btn');
+const uploadGoBtn = document.getElementById('upload-go');
+const fileList = document.getElementById('file-list');
+const uploadResults = document.getElementById('upload-results');
 
 function el(tag, cls, html) {
   const e = document.createElement(tag);
@@ -179,6 +218,7 @@ function escapeHtml(s) {
 }
 
 async function checkStatus() {
+  statusBar.classList.remove('error');
   try {
     const res = await fetch('/api/status');
     const data = await res.json();
@@ -186,6 +226,7 @@ async function checkStatus() {
       statusBar.textContent = data.reason;
       statusBar.classList.add('error');
       sendBtn.disabled = true;
+      examples.hidden = true;
       return;
     }
     let msg = `Ledger ready — ${data.transaction_count} transactions across ${data.document_count} documents.`;
@@ -194,12 +235,67 @@ async function checkStatus() {
       statusBar.classList.add('error');
     }
     statusBar.textContent = msg;
+    sendBtn.disabled = false;
     examples.hidden = false;
   } catch (e) {
     statusBar.textContent = 'Could not reach the server.';
     statusBar.classList.add('error');
   }
 }
+
+let pendingFiles = [];
+
+uploadChooseBtn.addEventListener('click', () => fileInput.click());
+
+fileInput.addEventListener('change', () => {
+  pendingFiles = Array.from(fileInput.files);
+  fileList.textContent = pendingFiles.length
+    ? `${pendingFiles.length} file(s): ${pendingFiles.map(f => f.name).join(', ')}`
+    : '';
+  uploadGoBtn.disabled = pendingFiles.length === 0;
+});
+
+function addUploadResultLine(text, statusClass) {
+  const line = el('div', 'upload-result ' + (statusClass || ''), escapeHtml(text));
+  uploadResults.appendChild(line);
+  return line;
+}
+
+uploadGoBtn.addEventListener('click', async () => {
+  if (!pendingFiles.length) return;
+  uploadGoBtn.disabled = true;
+  uploadChooseBtn.disabled = true;
+  const progressLine = addUploadResultLine(`Uploading ${pendingFiles.length} file(s)…`, '');
+
+  const form = new FormData();
+  pendingFiles.forEach(f => form.append('files', f));
+
+  try {
+    const res = await fetch('/api/upload', { method: 'POST', body: form });
+    const data = await res.json();
+    progressLine.remove();
+    if (data.error) {
+      addUploadResultLine(`Error: ${data.error}`, 'failed');
+    } else {
+      data.results.forEach(r => {
+        const parts = [`${r.file} — ${r.status}`];
+        if (r.transaction_count) parts.push(`${r.transaction_count} txn(s)`);
+        if (r.warnings && r.warnings.length) parts.push(r.warnings.join(' | '));
+        addUploadResultLine(parts.join(' — '), r.status);
+      });
+    }
+  } catch (e) {
+    progressLine.remove();
+    addUploadResultLine(`Upload failed: ${e.message}`, 'failed');
+  } finally {
+    pendingFiles = [];
+    fileInput.value = '';
+    fileList.textContent = '';
+    uploadGoBtn.disabled = true;
+    uploadChooseBtn.disabled = false;
+    checkStatus();
+  }
+});
 
 function addUserBubble(text) {
   const row = el('div', 'row user');
