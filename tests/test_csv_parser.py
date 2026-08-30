@@ -78,3 +78,32 @@ class TestTimestampColumnWithTrailingTime:
         r = parse_csv(os.path.join(FIXTURES, "timestamp_column.csv"))
         assert r.transactions[0].merchant_raw == "MerchantH"
         assert r.transactions[0].amount == Decimal("95071.92")
+
+
+class TestVerboseHeaderNames:
+    """A real user-uploaded fraud-detection-style CSV ("Transaction Date and Time",
+    "Transaction Amount", "Merchant Name", "Transaction Currency") was rejected outright
+    with "missing required column(s): ['date', 'amount']" — none of these longer,
+    more descriptive header names were in the alias lists."""
+
+    def test_all_rows_parse_with_no_rejections(self):
+        r = parse_csv(os.path.join(FIXTURES, "verbose_header_names.csv"))
+        assert len(r.document.parse_warnings) == 0
+        assert len(r.rejected_rows) == 0
+        assert len(r.transactions) == 3
+
+    def test_trailing_time_of_day_does_not_block_parsing(self):
+        r = parse_csv(os.path.join(FIXTURES, "verbose_header_names.csv"))
+        first = r.transactions[0]
+        assert (first.transaction_date.year, first.transaction_date.month, first.transaction_date.day) == (2022, 9, 24)
+
+    def test_merchant_name_column_recognized(self):
+        r = parse_csv(os.path.join(FIXTURES, "verbose_header_names.csv"))
+        assert r.transactions[0].merchant_raw == "Rajagopalan Ghose and Kant"
+
+    def test_transaction_currency_column_respected_per_row(self):
+        r = parse_csv(os.path.join(FIXTURES, "verbose_header_names.csv"))
+        currencies = {t.merchant_raw: t.currency for t in r.transactions}
+        assert currencies["Rajagopalan Ghose and Kant"] == "INR"
+        assert currencies["Konda-Sodhi"] == "USD"
+        assert currencies["Sule PLC"] == "EUR"

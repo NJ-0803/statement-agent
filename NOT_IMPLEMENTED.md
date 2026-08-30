@@ -289,6 +289,18 @@ and updated as two of them got built on explicit direction:
   present) — recorded here rather than guessed at, since building it against one synthetic example risks
   the same "unverified matcher" trap as §A.
 
+  **Confirmed at much larger scale** (`DECISIONS.md` §30): a second real user-uploaded file, a Kaggle
+  fraud-detection CSV, has **7,651 distinct cardholders across 8,000 rows** — not a handful of accounts
+  but effectively no two rows belonging to the same person. `aggregate_spending`'s "total" over this file
+  is meaningless (it sums money across thousands of unrelated people), and it comes back with the exact
+  same confident, un-caveated shape as a real personal total. This also produces a false positive in the
+  cross-document/statement duplicate-listing heuristic in `csv_parser.py` (`DATA QUALITY: N distinct dates
+  each have 2+ transactions...`) — that heuristic assumes "many transactions on one date" is suspicious
+  because it assumes one person's statement; with 7,651 people transacting daily, same-date multiplicity
+  is completely normal, not evidence of a merged file. Neither is fixed — both trace back to the same
+  missing `account_id` concept — but this is a much sharper demonstration of the risk than the original
+  16-account finding.
+
 ---
 
 ## Summary: what would change if this continued

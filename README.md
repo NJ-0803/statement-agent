@@ -77,7 +77,7 @@ into the running ledger, instead of only via `cli ingest` from the terminal — 
 python -m pytest tests/ -v
 ```
 
-271 tests, all runnable offline with no API key — they cover normalization (currency/date parsing),
+275 tests, all runnable offline with no API key — they cover normalization (currency/date parsing),
 PDF/CSV extraction (including the injection-defense and duplicate-detection tests described below),
 resolution (categorization, duplicates, reconciliation, anomaly detection), the query/aggregation
 tools, and the answer verifier's grounding/provenance checks. See `DECISIONS.md` §11 for the three real

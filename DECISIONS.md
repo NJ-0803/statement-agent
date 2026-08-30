@@ -1355,3 +1355,37 @@ live model in this pass.
 24 new tests (`tests/test_tools.py::TestTopNPerGroup`, `TestGenerateDashboard`; `tests/test_web.py`'s two
 new dashboard-passthrough tests, including one confirming a plain `generate_chart` call never populates
 `dashboard_table`). 271/271 passing.
+
+## 30. Third real-world CSV header alias gap, and the sharpest multi-account finding yet
+
+Uploaded through the web UI's upload feature (`DECISIONS.md` §26): a Kaggle credit-card fraud-detection
+CSV, 8,000 rows. It ingested as a document but produced **zero transactions** — `csv_parser.py` rejected
+every row with `missing required column(s): ['date', 'amount']`. The file's actual headers were verbose,
+descriptive names (`Transaction Date and Time`, `Transaction Amount`, `Merchant Name`, `Transaction
+Currency`, `Transaction Notes`) — none in the alias lists, which only recognized shorter conventional
+names. Same category of gap as the `"timestamp"` alias fix in §25, a third real dataset hitting the same
+kind of wall.
+
+Fixed by adding the exact observed header strings (lowercased) to `_DATE_ALIASES`, `_DESC_ALIASES`,
+`_AMOUNT_ALIASES`, `_CURRENCY_ALIASES`, `_NOTES_ALIASES` in `csv_parser.py` — same alias-list mechanism,
+no new logic. Verified directly against the real file before and after: 0/8000 rows parsing, then
+8000/8000 with zero rejections, including that the trailing time-of-day in `Transaction Date and Time`
+(`2022-09-24 13:54:27`) didn't need any further fix — the `_strip_trailing_time()` matching path from §25
+already covers it. Also confirmed the per-row `Transaction Currency` column is read correctly (INR/EUR/USD
+all present and correctly assigned, not defaulted).
+
+Re-ingesting the real file surfaced the sharpest instance yet of the account-awareness gap already
+recorded in `NOT_IMPLEMENTED.md`: this file has **7,651 distinct cardholders across its 8,000 rows** — not
+a handful of blended accounts, but essentially a stranger-per-transaction dataset. `aggregate_spending`'s
+"total" over it would blend thousands of unrelated people's money with the same confident, uncaveated
+shape as a real personal total. It also triggered a related false positive: the document-level "looks like
+two transaction listings merged into one file" duplicate-listing check fired (1,356 dates with 2+
+transactions), because that heuristic assumes a same-date cluster is suspicious for one person's
+statement — with 7,651 people transacting, same-date multiplicity is normal, not evidence of a merged
+file. Neither the account-blending nor the false-positive heuristic was fixed — both are downstream of the
+same missing `account_id` concept documented (not built) in `NOT_IMPLEMENTED.md`. The file itself stays
+local-only (`uploaded_documents/`, gitignored), consistent with the user's "only want to test it for
+myself" direction from earlier in this session.
+
+4 new tests (`tests/test_csv_parser.py::TestVerboseHeaderNames`), new fixture
+`tests/fixtures/verbose_header_names.csv`. 275/275 passing.
