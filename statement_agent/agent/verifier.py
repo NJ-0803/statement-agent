@@ -2,15 +2,23 @@
 
 This never calls the LLM. It only inspects: (1) the trace of tool calls the
 agent actually made during this turn, and (2) the structured final answer it
-proposed. Two checks matter:
+proposed. Three checks matter:
 
   - Provenance: every transaction ID the answer cites must be a real ID that
     appeared somewhere in the ledger (not one the model invented).
-  - Grounding: every numeric amount the answer claims must appear literally
-    in some tool result from THIS turn's trace — i.e. it must have come from
-    a deterministic aggregate_spending/compare_periods/etc. call, not from
-    the model doing arithmetic in its head. If a claimed number can't be
-    found anywhere in the trace, verification fails outright.
+  - Grounding: every numeric amount the answer claims (via verified_amounts)
+    must appear literally in some tool result from THIS turn's trace — i.e.
+    it must have come from a deterministic aggregate_spending/compare_periods/
+    etc. call, not from the model doing arithmetic in its head. If a claimed
+    number can't be found anywhere in the trace, verification fails outright.
+  - Prose grounding: any specific decimal figure stated in answer_text/caveats
+    (not just the structured verified_amounts field) must also appear
+    somewhere in the trace. Found necessary live: a model asked to justify a
+    categorization stated a precise-sounding statistical threshold in prose
+    that was never checked against anything, because verified_amounts was
+    empty — it happened to be correct, but nothing verified that, and a
+    wrong number in the same shape would have passed identically. See
+    DECISIONS.md for the incident this closes.
 
 The LLM's own proposed status (VERIFIED / VERIFIED_WITH_CAVEATS) can be
 downgraded by this check but never upgraded — if it says VERIFIED but claims
@@ -73,9 +81,31 @@ def _normalize_decimal(s: str) -> str | None:
         return None
 
 
+# [\d,]* absorbs Indian-style comma grouping (₹80,000.00, or the irregular lakh/crore
+# grouping like 1,25,000.50) so a real number isn't split mid-digit-run and falsely
+# treated as ungrounded — see TestUngroundedProseDecimalFails::test_comma_grouped_number
+# in tests/test_verifier.py for the exact failure this guards against.
+_DECIMAL_IN_PROSE_RE = re.compile(r"\d[\d,]*\.\d+")
+
+
+def _extract_decimals(text: str) -> set[str]:
+    out: set[str] = set()
+    for m in _DECIMAL_IN_PROSE_RE.findall(text):
+        norm = _normalize_decimal(m.replace(",", ""))
+        if norm is not None:
+            out.add(norm)
+    return out
+
+
 def _walk_values(obj, out: set[str]) -> None:
-    """Recursively collect every string/number-looking leaf value from a tool
-    result, regardless of whether it's a dataclass, dict, list, or scalar."""
+    """Recursively collect every number a tool result could ground a claim in —
+    both whole-field numeric values (e.g. amount="80000.00") AND numbers embedded
+    inside a longer descriptive string (e.g. a `notes` field reading "...(modified
+    z-score 82.1)..."). The embedded-number extraction matters: a whole-string-only
+    Decimal parse would treat that entire notes sentence as unparseable and silently
+    drop the 82.1 it contains, making a genuinely tool-sourced figure look ungrounded
+    the moment the model repeats it — found while adding the prose-decimal check
+    below (see DECISIONS.md), not before."""
     if obj is None:
         return
     if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
@@ -90,10 +120,16 @@ def _walk_values(obj, out: set[str]) -> None:
         for v in obj:
             _walk_values(v, out)
         return
-    if isinstance(obj, (str, int, float, Decimal)):
+    if isinstance(obj, (int, float, Decimal)):
         norm = _normalize_decimal(str(obj))
         if norm is not None:
             out.add(norm)
+        return
+    if isinstance(obj, str):
+        norm = _normalize_decimal(obj)
+        if norm is not None:
+            out.add(norm)
+        out.update(_extract_decimals(obj))
 
 
 def _collect_grounded_numbers(trace: list[ToolCallRecord]) -> set[str]:
@@ -159,6 +195,15 @@ def verify(final_answer: FinalAnswer, trace: list[ToolCallRecord]) -> Verificati
                 f"claimed amount {claim.amount} {claim.currency} ({claim.label}) does not match any number "
                 f"returned by a tool this turn — not grounded, treated as possible fabrication"
             )
+
+    prose = " ".join([final_answer.answer_text, *final_answer.caveats])
+    ungrounded_prose_decimals = sorted(_extract_decimals(prose) - grounded_numbers)
+    if ungrounded_prose_decimals:
+        failures.append(
+            f"answer text states specific decimal figure(s) {ungrounded_prose_decimals} that do not appear "
+            f"in any tool result this turn — these were never checked via verified_amounts, so this is a "
+            f"free-text claim with no structural backing; treated as a possible fabrication"
+        )
 
     if failures:
         return VerificationResult(status="INSUFFICIENT_INFORMATION", passed=False, failures=failures)

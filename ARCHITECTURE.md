@@ -406,6 +406,13 @@ than as a plan committed to before execution.
      conversation (never invented or half-remembered);
    - every `verified_amounts` entry must literally match (after `Decimal` normalization) a number that
      appeared somewhere in the trace — never something the model computed itself;
+   - every specific decimal figure stated in `answer_text`/`caveats` — not just the structured
+     `verified_amounts` field — must also match something the trace actually returned. Added after a
+     manual red-team test found the gap live: a model justifying a categorization stated a precise
+     statistical threshold in prose that was never checked, because `verified_amounts` was empty — it
+     happened to be correct, but nothing verified that (`DECISIONS.md` §22). Deliberately scoped to
+     decimals specifically (not every number), so legitimate integer counts ("3 transactions") aren't
+     flagged as if they needed individual tool-result provenance.
    - `answer_text` is scanned for stray tool-call-like artifacts (a real glitch found via manual
      browser testing, where the model occasionally leaked fragments like
      `</answer_text><parameter name="proposed_status">` into its own answer) — caught and rejected

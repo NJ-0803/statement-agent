@@ -75,7 +75,7 @@ thin wrapper over the exact same `Store`/`run_agent()` the CLI uses — no separ
 python -m pytest tests/ -v
 ```
 
-211 tests, all runnable offline with no API key — they cover normalization (currency/date parsing),
+216 tests, all runnable offline with no API key — they cover normalization (currency/date parsing),
 PDF/CSV extraction (including the injection-defense and duplicate-detection tests described below),
 resolution (categorization, duplicates, reconciliation, anomaly detection), the query/aggregation
 tools, and the answer verifier's grounding/provenance checks. See `DECISIONS.md` §11 for the three real
@@ -148,6 +148,9 @@ runs as part of `pytest tests/` via `tests/test_gold_eval.py`, one test per case
   from the model alongside it, and the final answer carries a separate `final_reasoning`, both available
   via `--trace`, but never fed into the verifier's grounding checks (which only ever inspect actual tool
   results, so "confident reasoning" toward a fabricated number still fails verification).
+- Check specific decimal figures stated in the answer's own prose (a statistical threshold, a percentage),
+  not just the structured "verified" numbers — found live that a plausible-sounding number in free text
+  passed verification purely by coincidence, since nothing had ever checked it; see `DECISIONS.md` §22.
 
 ## What it can't do (yet)
 

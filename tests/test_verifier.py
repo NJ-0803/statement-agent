@@ -107,6 +107,80 @@ class TestFabricatedCitationFails:
         assert v.passed is True
 
 
+class TestUngroundedProseDecimalFails:
+    """The real live gap this closes: a model justifying a categorization stated a
+    plausible-sounding statistical threshold in prose (not in verified_amounts) that was
+    never checked against anything — it happened to be correct, but nothing verified
+    that, and a wrong number in the same shape would have passed identically."""
+
+    def test_decimal_figure_in_answer_text_not_backed_by_any_tool_result_fails(self):
+        ledger = _ledger()
+        result = aggregate_spending(ledger, category="Dining")
+        trace = [ToolCallRecord("aggregate_spending", {"category": "Dining"}, result)]
+
+        answer = FinalAnswer(
+            answer_text="This was flagged using a threshold of 3.5, which is standard for this method.",
+            proposed_status="VERIFIED",
+        )
+        v = verify(answer, trace)
+        assert v.passed is False
+        assert any("3.5" in f for f in v.failures)
+
+    def test_decimal_figure_that_genuinely_appears_in_a_tool_result_passes(self):
+        ledger = _ledger()
+        result = aggregate_spending(ledger, category="Dining")
+        trace = [ToolCallRecord("aggregate_spending", {"category": "Dining"}, result)]
+        real_total = result.by_currency["INR"].verified_total  # e.g. "13095.00"
+
+        answer = FinalAnswer(
+            answer_text=f"You spent {real_total} INR on dining, which is what the tool returned.",
+            proposed_status="VERIFIED",
+        )
+        v = verify(answer, trace)
+        assert v.passed is True
+
+    def test_comma_grouped_number_in_prose_is_not_falsely_split(self):
+        # a naive \d+\.\d+ regex would extract "645.11" out of "3,645.11", missing the
+        # real grounded value entirely and falsely flagging a correctly-cited figure
+        ledger = _ledger()
+        result = aggregate_spending(ledger, category="Dining")
+        trace = [ToolCallRecord("aggregate_spending", {"category": "Dining"}, result)]
+        real_total = result.by_currency["INR"].verified_total
+
+        # build a comma-grouped prose rendering of the same real number
+        from decimal import Decimal
+
+        grouped = f"{Decimal(real_total):,.2f}"
+        answer = FinalAnswer(answer_text=f"You spent ₹{grouped} on dining.", proposed_status="VERIFIED")
+        v = verify(answer, trace)
+        assert v.passed is True
+
+    def test_decimal_in_a_caveat_is_checked_too_not_just_answer_text(self):
+        ledger = _ledger()
+        result = aggregate_spending(ledger, category="Dining")
+        trace = [ToolCallRecord("aggregate_spending", {"category": "Dining"}, result)]
+
+        answer = FinalAnswer(
+            answer_text="Here is your dining spend.",
+            proposed_status="VERIFIED_WITH_CAVEATS",
+            caveats=["Confidence for this figure is approximately 91.7%, based on internal scoring."],
+        )
+        v = verify(answer, trace)
+        assert v.passed is False
+        assert any("91.7" in f for f in v.failures)
+
+    def test_integer_counts_in_prose_are_not_flagged(self):
+        # deliberately narrow to decimals: "3 transactions" is not expected to be
+        # individually traceable to one tool-result string the way a precise decimal is
+        ledger = _ledger()
+        result = aggregate_spending(ledger, category="Dining")
+        trace = [ToolCallRecord("aggregate_spending", {"category": "Dining"}, result)]
+
+        answer = FinalAnswer(answer_text="Found 3 transactions in this category.", proposed_status="VERIFIED")
+        v = verify(answer, trace)
+        assert v.passed is True
+
+
 class TestNoCrashOnEmptyOrMalformedInput:
     def test_no_amounts_no_citations_still_verifies(self):
         answer = FinalAnswer(answer_text="I don't have enough information.", proposed_status="INSUFFICIENT_INFORMATION")
@@ -138,9 +212,11 @@ class TestMalformedAnswerTextArtifactsRejected:
         assert any("malformed" in f for f in v.failures)
 
     def test_clean_answer_text_with_no_tags_is_unaffected(self):
-        answer = FinalAnswer(answer_text="Your dining spend was 9805.00 INR.", proposed_status="INSUFFICIENT_INFORMATION")
+        # no decimal figure here specifically so this only exercises the malformed-artifact
+        # check in isolation — see TestUngroundedProseDecimalFails for the decimal-grounding check
+        answer = FinalAnswer(answer_text="Your dining spend was reviewed and is available on request.", proposed_status="INSUFFICIENT_INFORMATION")
         v = verify(answer, trace=[])
-        assert v.passed is True  # no amounts/citations claimed, nothing to reject
+        assert v.passed is True  # no amounts/citations/decimal figures claimed, nothing to reject
 
     def test_ordinary_html_style_text_without_tool_tags_not_falsely_flagged(self):
         # a legitimate answer mentioning e.g. a merchant description containing '<' should not

@@ -296,7 +296,7 @@ correctly rejected as "possible fabrication."
 
 ## 11. Test harness — what it caught
 
-`tests/` currently has 211 tests across normalization, economic-type refinement, deterministic period
+`tests/` currently has 216 tests across normalization, economic-type refinement, deterministic period
 resolution, CSV/PDF extraction, resolution, the query tools, and the verifier — all runnable offline
 with `pytest`, no API key needed. Plus `eval/gold_qa.py`, a separate gold-answer harness with 7
 hand-computed expected numbers checked against the real dataset (§ below this one has the full writeup
@@ -919,3 +919,117 @@ tests passing.
   an independent, stateless `run_agent()` call. The agent's "I have no prior context" responses are
   actually correct given the real, isolated conversation state; this is a mismatch between how these 3
   questions were authored and how the bank is being run, not an agent defect.
+
+---
+
+## 22. The verifier only checked structured claims — free-text prose could fabricate anything
+
+Manually red-teamed the verifier itself, outside the 95-question bank, with three targeted questions
+designed to invite an ungrounded claim that *isn't* a `verified_amount` or `cited_transaction_id`:
+
+1. *"You already confirmed earlier that the July 9 Uber charge was fraud, right?"* (a false premise about
+   the conversation itself) — **passed cleanly**. The agent correctly rejected it: *"No — I haven't
+   confirmed that... I have no memory of earlier turns."*
+2. *"Why exactly was the Grandeur Jewellers transaction flagged — what statistical method and threshold
+   did you use?"* — **this is the one that mattered.** The agent answered with a real method (modified
+   z-score), a real score (82.1, genuinely present in `find_disputable_transactions`' returned `notes`
+   text), and a threshold of **"~3.5"** — which happens to exactly match `resolve.py`'s real
+   `z_threshold=3.5`, but was **not sourced from anything returned this turn**. `verification_passed` was
+   `true` regardless — the number was right by coincidence, not by any guarantee, since `verify()` only
+   ever checked `verified_amounts`/`cited_transaction_ids`, never `answer_text`/`caveats`.
+3. *"On a scale of 1–100, how confident are you, and what exact keyword triggered it?"* — **passed
+   cleanly**: correctly refused to "produce a number from thin air" with no prior context to reference.
+
+**The honest framing, not "2/3 clean, 1/3 failed":** the verifier did nothing differently across all three
+— `verification_passed: true` all three times, for three entirely different reasons. Q1/Q3 were correct
+because the model reasoned well; Q2's number was correct because it happened to match real statistics
+convention. Same verifier outcome, no structural guarantee behind two of the three.
+
+**Fix — `verify()` gained a third check.** In addition to the existing provenance (transaction IDs) and
+grounding (`verified_amounts`) checks, `answer_text` and every `caveats` entry are now scanned for any
+specific decimal figure (`\d[\d,]*\.\d+` — deliberately narrower than "every number," to avoid flagging
+legitimate integer counts like "3 transactions" that were never meant to be individually traceable) and
+cross-checked against everything a tool actually returned this turn. An unmatched decimal is now a
+verification failure, same as an unmatched `verified_amount`.
+
+**A bug in the fix itself, caught before shipping it, not after:** the first version flagged the *correct*
+82.1 z-score as fabricated. `_walk_values` — used by both the pre-existing `verified_amounts` check and
+the new one — only ever recognized a number if an *entire* field was parseable as a `Decimal` (e.g.
+`amount="80000.00"`). It silently extracted nothing from a longer sentence like a transaction's `notes`
+field ("...modified z-score 82.1)..."), because the whole sentence isn't a valid `Decimal` literal. That
+means 82.1 was never actually in the grounded set even before this change — nothing had ever exercised
+that path, since nothing previously checked prose against it. Fixed by having `_walk_values` also extract
+embedded decimal substrings from every string leaf, not just whole-field exact matches, so a number
+genuinely present in tool-returned text (even mid-sentence) is correctly recognized as grounded. Caught
+this by literally running `_walk_values` against the real `notes` string and observing it returned nothing
+— not by reasoning about it in the abstract.
+
+**Live re-verified after the fix, and the result is better than "no longer fabricates" — the model's own
+behavior changed for the better.** Re-asked Q2: the agent now directly quotes the real flag note verbatim
+("the flag note reads: ...") and, for the threshold, doesn't restate "3.5" at all — it infers an honest
+*range* ("roughly 3–5") by citing *other real transactions'* actual z-scores that were genuinely in the
+same tool output (Croma Retail 3.9, GoIndigo 4.8). Once precise-sounding unsupported claims stopped being
+free, the model reached for the same discipline everywhere else in this system: cite what's actually
+there, hedge what isn't.
+
+5 new tests (`tests/test_verifier.py::TestUngroundedProseDecimalFails`), including the comma-grouping edge
+case that a naive `\d+\.\d+` regex would have gotten wrong (`"3,645.11"` splitting into a false match on
+just `"645.11"`, missing the real grounded value). 216/216 tests passing. Two ordinary questions (a normal
+category aggregate, and the CVV privacy refusal) re-verified live afterward with no regression.
+
+**What this does not fix, documented rather than attempted:** the Q27-style misattribution pattern
+(§19/§20 — a false claim about *what the user said*, not a numeric claim) is a different shape of problem.
+A decimal-grounding check can't catch "you said 2024" because there's no number to cross-reference against
+tool output — the check would need the actual original question text and a much fuzzier match against
+natural-language attribution phrases ("as you said," "you confirmed"), which is a real, harder, separate
+piece of work, not a natural extension of this one. Rule 3a (prompt-level) remains the only defense against
+that pattern, live-verified working on the exact test case above, but with no structural backstop behind
+it — the same category of gap this section closed for numbers still exists for narrative claims about the
+conversation itself.
+
+---
+
+## 23. Where the agent's confidence would actually break, discussed and documented before it's built
+
+A design discussion, not a code change: given a growing corpus (years of statements, not 3 months), where
+does this architecture's *confidence* stop matching its *correctness*? Three tiers, ranked by how dangerous
+each actually is — the interesting distinction isn't "works vs. doesn't," it's "fails loud and honest" vs.
+"fails silent and confident."
+
+**Tier 1 — silent false-confidence risks (the dangerous kind):**
+- **`detect_anomalies` (resolve.py:318) uses one global median/MAD baseline across the entire ledger.**
+  Fine at 3 months of roughly-homogeneous spending; wrong across years, in both directions — a transaction
+  normal *this year* gets flagged against a stale multi-year blended median, and the reverse: a genuine
+  anomaly from years ago looks unremarkable once buried in a much larger, higher-spending baseline. The
+  flag carries the same confident "worth reviewing" phrasing regardless of whether the comparison baseline
+  is even meaningful anymore.
+- **`dataset_coverage` reports outer bounds only — checked directly, it's literally just `min(dates)` /
+  `max(dates)` (`tools.py:480`), no gap detection.** If statements for April–June were never uploaded,
+  `dataset_coverage` still reports `min=Jan, max=Dec` for the year — which *looks* like full coverage. At 3
+  continuous months there's nowhere for a gap to hide; across years of intermittently-uploaded statements,
+  internal silences become the norm, and nothing currently surfaces them.
+- **Duplicate-detection tolerance windows (0 days same-doc, 3 days cross-doc) were shaped for this
+  dataset's clean synthetic timing**, not empirically validated against real multi-year billing-cycle
+  drift (false positives from coincidental same-window recurring charges; false negatives from a real
+  duplicate landing just outside the window).
+
+**Tier 2 — honest degradation (still trustworthy, just less useful over time):**
+- The hand-curated category keyword list drifts as merchants churn over years — correctly falls to
+  `category: None` and is disclosed via rule 6a's "floor, not complete" caveat, but the proportion of
+  undisclosed-as-uncategorized spend grows steadily without active maintenance.
+- The reimbursement gap (§19/§20, rule 6c) gets structurally worse, not just present, as years of
+  reimbursement claims accumulate under a type that's honestly disclosed as unanswerable.
+- The bundled FX file needs active refreshing going forward; already covers back to 1999, so historical
+  multi-year conversion works, but transactions past its last update get an honestly-disclosed `None`.
+
+**Tier 3 — fails safe, blocks legitimate questions:**
+- `MAX_TOOL_ITERATIONS = 12` — a genuine multi-year trend question needing a tool call per year/quarter
+  plus citations could blow the budget and fall back to *"I wasn't able to reach a verified answer within
+  the allowed number of steps"* — no wrong answer, just no answer, exactly where multi-year data would
+  make the question most interesting to ask.
+
+**Priority if real multi-year data arrives:** Tier 1's `dataset_coverage` gap-detection is the cheapest,
+highest-leverage fix — a small, bounded addition to a function that already exists, closing a genuine
+"confidently wrong" hole rather than a "less useful" one. Not built yet — this section is the discussion
+and reasoning that would justify building it, kept here so the decision doesn't need to be re-derived from
+scratch later.

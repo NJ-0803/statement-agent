@@ -4,7 +4,9 @@ Everything knowingly left out of this build, consolidated in one place, each wit
 — not a vague "future work" list. Per the brief's own instruction ("note anything unfinished
 honestly"), this is written with the same rigor as `EDGE_CASES.md`'s gap entries. §A–§E are the 8
 unresolved gaps from that audit, regrouped by root cause; §F and §G were surfaced later, by checking
-this build against an external capability checklist rather than the edge-case catalogue.
+this build against an external capability checklist rather than the edge-case catalogue; §H was
+surfaced later still, by manually red-teaming the verifier itself and by a design discussion about
+what breaks at real (years-long) scale rather than this dataset's 3-month sample.
 
 None of what follows caused a wrong number to reach a user silently — that was checked, not assumed
 (see `EDGE_CASES.md`'s summary). What follows is capability that doesn't exist yet, disclosed rather
@@ -225,6 +227,45 @@ inherits the cap built here for free.
 
 ---
 
+## H. The verifier's remaining blind spot, and where confidence would erode at real scale
+
+**Built, not a gap anymore: ungrounded decimal claims in prose.** `verify()` used to only check the
+structured `verified_amounts`/`cited_transaction_ids` fields — a manual red-team test found that
+`answer_text`/`caveats` were never scanned at all, so a plausible-but-fabricated number in free prose
+(a statistical threshold, in the actual case found) passed verification by coincidence, not by guarantee.
+Fixed — see `DECISIONS.md` §22 for the full incident, including a bug in the fix itself caught before
+shipping (the grounding walk didn't originally extract numbers embedded inside a longer string like a
+`notes` field, so it would have flagged genuinely-sourced numbers as fabricated).
+
+**Still a real gap: prose claims about the conversation itself.** The Q27 pattern (§19/§20) —
+misattributing a detail to "what the user said" that they never said — has no structural check behind it,
+only the prompt-level rule 3a. A decimal-grounding check can't catch this: there's no number to
+cross-reference against tool output, since the false claim is about the *conversation's own content*, not
+the ledger. A real fix would need the actual original question text passed into `verify()` and a
+narrower, phrase-triggered check (e.g. a claim following "as you said"/"you confirmed" cross-referenced
+against whether the referenced detail literally appears in the user's own message) — buildable, but a
+genuinely different, fuzzier piece of work than the decimal check, not a natural extension of it. Not
+attempted yet; scoped out explicitly rather than bolted on half-working.
+
+**Where scale would erode confidence, discussed before it's built (`DECISIONS.md` §23).** Three concrete
+risks identified for a corpus of years, not months — ranked by how dangerous each actually is:
+- `detect_anomalies`'s single global median/MAD baseline goes stale across years of changing spending
+  patterns, with no caveat attached when it does (Tier 1 — silent false confidence).
+- `dataset_coverage` reports only outer min/max bounds, not gaps — a missing quarter of statements would
+  look like full coverage (Tier 1 — silent false confidence, and the cheapest fix of the three: a small,
+  bounded addition to a function that already exists).
+- Duplicate-detection tolerance windows were shaped for this dataset's clean synthetic timing, not
+  validated against real multi-year billing-cycle noise (Tier 1).
+- Category-keyword drift, the reimbursement gap, and FX-file staleness all degrade gracefully — already
+  honestly disclosed via existing caveat mechanisms, just increasingly less useful over time (Tier 2).
+- `MAX_TOOL_ITERATIONS=12` would block a genuinely complex multi-year trend question — fails safe (no
+  answer) rather than silently wrong (Tier 3).
+
+None of Tier 1–3 is built; this section exists so the reasoning behind prioritizing `dataset_coverage`'s
+gap detection first (if real multi-year data ever arrives) doesn't need to be re-derived from scratch.
+
+---
+
 ## Summary: what would change if this continued
 
 **§F (currency conversion) is done** — see `DECISIONS.md` §17. **§G's #1 (default cap + truncation
@@ -238,6 +279,11 @@ disclosure) and #2 (O(n²) → O(n) dedup) are done** — see `DECISIONS.md` §1
   filtering into SQL, paginating `list_documents`, and eventually pre-computed rollups. None are urgent
   at ~90 transactions; #3 is the natural next step whenever a real large ledger exists to validate
   against.
+- **If optimizing for trust at real (multi-year) scale specifically:** §H's `dataset_coverage` gap
+  detection — cheapest of the newly-identified risks, and the only Tier-1 (silent false-confidence) one
+  with an obvious, bounded fix rather than a genuinely hard problem (`detect_anomalies`'s stale-baseline
+  risk and the duplicate-tolerance mistuning both need real multi-year data to validate a fix against,
+  the same constraint that's deferred §A and §D this whole time).
 
 ---
 
