@@ -241,6 +241,14 @@
       <h2 id="list-title">Your statements</h2>
       <p class="muted">Everything you've added, newest first. You can undo any import — it removes only that file's transactions.</p>
       <ul class="imports" id="imports-list"></ul>
+      <details class="panel" style="margin-top:2rem">
+        <summary><strong>Delete everything</strong></summary>
+        <p class="muted">Removes every statement, transaction, rule, link and uploaded file from this computer. This can't be undone — make a backup first with <code>python -m statement_agent.cli backup --to my-backup.db</code>.</p>
+        <label class="field" for="wipe-confirm">Type DELETE EVERYTHING to confirm</label>
+        <input id="wipe-confirm" type="text" autocomplete="off">
+        <div class="actions"><button type="button" class="btn danger" id="wipe-run">Delete everything</button></div>
+        <p id="wipe-note" role="status"></p>
+      </details>
     </section>
 
     <!-- ============ Transactions: check and correct categories ============ -->
@@ -267,6 +275,7 @@
         <button type="button" class="btn" id="groq-run">Ask Groq about uncategorized purchases</button>
         <span class="muted" id="groq-note">Only merchant names are sent — never amounts, dates or account numbers.</span>
       </div>
+      <p class="actions" style="margin-top:.5rem"><a class="btn quiet" id="export-link" href="/api/export.csv" download>Download all transactions (CSV)</a></p>
       <p id="txn-count" class="muted" role="status"></p>
       <ul class="imports" id="txn-list"></ul>
       <div class="actions"><button type="button" class="btn quiet" id="txn-more" hidden>Show more</button></div>

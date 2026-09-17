@@ -389,6 +389,7 @@ research work that can't be done in code at all.
 **Production foundation (roadmap Phase 2)**
 - No accounts, authentication (passkeys/OTP), RBAC or session revocation. Isolation between people is still
   only the `--client` one-ledger-per-client file (§31); `ImportJob.owner` is always `"local"`.
+- Local controls now exist (§40): delete everything (web + CLI), backup/restore, request rate limits.
 - No object storage, KMS-managed encryption at rest, quarantine bucket, WAF, or retention/deletion policy.
   Uploads sit unencrypted in `uploaded_documents/` (gitignored); rollback and cancel delete that import's file.
 - Reading runs on an in-process thread pool, not isolated queue workers with CPU/memory/time limits, bounded

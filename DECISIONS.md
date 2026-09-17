@@ -1938,3 +1938,35 @@ already installs. Live, `qwen/qwen3.8-27b` placed Blue Tokai and Chai Point unde
 under Healthcare, and only those three cleaned merchant names were sent. The tests still use a faked API.
 
 475 tests passing (15 new in `tests/test_learning_categories.py`).
+
+## 40. Wrap-up: export, explain, convert, delete-everything, backup/restore, rate limits, Groq column suggestions
+
+Built in a final 30-minute window, on request ("parser, agent tools and interface, security"). The smallest
+useful slice of each:
+- **Parser.** "Ask Groq to suggest the columns" in the column editor. Only header names and each column's
+  *kind* (date, money, text…, from `columns.py`) are sent, never cell values. The answer only pre-fills the
+  choices, which the person still confirms. Unknown roles, bad indexes and reused roles are dropped.
+- **Agent tools.**
+  - `explain_transaction`: source, per-field reasons, category and kind provenance, links, duplicate flag,
+    and neighbouring rows.
+  - `convert_currency`: one amount at its date's bundled rate.
+  - `export_rows` / `export_csv`, including extra columns. Cells starting with `= + - @` are prefixed with
+    `'` so a spreadsheet won't run them as formulas.
+- **Interface.** "Download all transactions (CSV)" (`GET /api/export.csv`, optional from/to/category)
+  and "Delete everything", which requires typing DELETE EVERYTHING.
+- **Security (free, local).**
+  - `DELETE /api/everything` (CSRF, plus the confirmation phrase) wipes every table and the upload folder.
+  - Per-client in-memory rate limits on state-changing API calls: 10/min for questions, 6/min for Groq,
+    30/min for uploads, 240/min otherwise, answered with 429.
+  - CLI `backup --to` uses SQLite's online backup API, so it's safe while the app runs.
+  - CLI `restore --from` checks the file is a ledger and needs `--force` to replace one.
+  - CLI `wipe --yes`.
+
+**Still not built** (in `NOT_IMPLEMENTED.md`): encryption at rest and a passphrase lock, retention
+policies, per-file worker processes with CPU/memory limits, budgets, a source-page viewer, Hindi
+interface and voice input, trusted-person alerts, accounts as their own records, EMI / FX-fee / pending
+links, headerless PDF tables, and the scale work. The full test suite now takes several minutes on this
+machine, up from about 25 seconds earlier today; profiling was interrupted, so the cause (machine load or
+a slower code path) isn't established.
+
+481 tests passing (6 new in `tests/test_wrapup_tools.py`).

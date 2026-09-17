@@ -456,6 +456,25 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "name": "explain_transaction",
+        "description": (
+            "Everything known about ONE transaction: source file/page/row, how each field was read, where its "
+            "category and kind came from, links (refund, transfer…), duplicate flags, and neighbouring rows. "
+            "Use for 'why is this here / why this category / what is this charge'."
+        ),
+        "input_schema": {"type": "object", "properties": {"transaction_id": {"type": "string"}}, "required": ["transaction_id"]},
+    },
+    {
+        "name": "convert_currency",
+        "description": "Convert one amount between currencies at the rate for a given date (bundled historical rates). For a one-off 'how much is X in Y' question — use aggregate_spending(convert_to=...) for totals.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"amount": {"type": "string"}, "from_currency": {"type": "string"},
+                           "to_currency": {"type": "string"}, "date": {"type": "string", "description": "ISO date"}},
+            "required": ["amount", "from_currency", "to_currency", "date"],
+        },
+    },
+    {
         "name": "final_answer",
         "description": "Call this to give your final answer. This is the ONLY way to complete a turn — do not just write prose.",
         "input_schema": {
@@ -582,6 +601,11 @@ def _dispatch(tool_name: str, tool_input: dict, ledger: list[Transaction], docum
         return T.find_disputable_transactions(ledger)
     if tool_name == "summarize_statement":
         return T.summarize_statement(ledger, source_file=tool_input["source_file"])
+    if tool_name == "explain_transaction":
+        return T.explain_transaction(ledger, list(events), tool_input["transaction_id"])
+    if tool_name == "convert_currency":
+        return T.convert_currency(tool_input["amount"], tool_input["from_currency"], tool_input["to_currency"],
+                                  _parse_date(tool_input["date"]))
     if tool_name == "get_sources":
         return T.get_sources(ledger, tool_input["transaction_ids"])
     if tool_name == "dataset_coverage":

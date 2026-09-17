@@ -36,9 +36,11 @@ from __future__ import annotations
 import os
 import secrets
 import shutil
+import time
 import uuid
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
+from datetime import date
 
 from flask import Flask, jsonify, render_template, request
 from werkzeug.exceptions import HTTPException
@@ -156,6 +158,28 @@ def create_app(db_path: str = "ledger.db", *, upload_dir: str = UPLOAD_DIR, run_
 
     def _error(message: str, code: int, **extra):
         return jsonify({"error": message, **extra}), code
+
+    hits: dict[tuple[str, str], list[float]] = {}
+    limits = {"ask": (10, 60), "groq": (6, 60), "upload": (30, 60), "write": (240, 60)}
+
+    @app.before_request
+    def _rate_limit():
+        """Per-client request limits, in memory: enough to stop a runaway page or script from burning API credits
+        or hammering the ledger. Localhost-only app, so this is a safety valve, not DDoS protection."""
+        if not request.path.startswith("/api/") or request.method not in _STATE_CHANGING:
+            return None
+        bucket = ("ask" if request.path == "/api/ask" else "groq" if "groq" in request.path or "suggest-columns" in request.path
+                  else "upload" if request.path == "/api/imports" else "write")
+        limit, window = limits[bucket]
+        now = time.monotonic()
+        key = (request.remote_addr or "?", bucket)
+        recent = [t for t in hits.get(key, []) if now - t < window]
+        if len(recent) >= limit:
+            hits[key] = recent
+            return _error("Too many requests in a short time. Please wait a minute and try again.", 429)
+        recent.append(now)
+        hits[key] = recent
+        return None
 
     @app.before_request
     def _csrf():
@@ -565,6 +589,58 @@ def create_app(db_path: str = "ledger.db", *, upload_dir: str = UPLOAD_DIR, run_
     @app.route("/api/categorize/groq", methods=["POST"])
     def post_groq_categorize():
         return _with_store(lambda store: jsonify(ledger_edits.categorize_with_groq(store)))
+
+    @app.route("/api/export.csv", methods=["GET"])
+    def export_csv():
+        from ..agent.tools import export_csv as to_csv, export_rows
+
+        if not os.path.exists(app.config["DB_PATH"]):
+            return _error("Nothing to export yet.", 404)
+
+        def run(store):
+            try:
+                df = date.fromisoformat(request.args["from"]) if request.args.get("from") else None
+                dt = date.fromisoformat(request.args["to"]) if request.args.get("to") else None
+            except ValueError:
+                return _error("from and to must be dates like 2025-04-01", 400)
+            body = to_csv(export_rows(store.all_transactions(), date_from=df, date_to=dt,
+                                      category=request.args.get("category") or None))
+            return app.response_class("\ufeff" + body, mimetype="text/csv", headers={
+                "Content-Disposition": f"attachment; filename=transactions-{date.today().isoformat()}.csv",
+                "Cache-Control": "no-store"})
+        return _with_store(run)
+
+    @app.route("/api/everything", methods=["DELETE"])
+    def delete_everything():
+        data = _json_body()
+        if not data or data.get("confirm") != "DELETE EVERYTHING":
+            return _error('To delete everything, send {"confirm": "DELETE EVERYTHING"}.', 400)
+
+        def run(store):
+            store.wipe()
+            root = app.config["UPLOAD_DIR"]
+            if os.path.isdir(root):
+                for name in os.listdir(root):
+                    shutil.rmtree(os.path.join(root, name), ignore_errors=True)
+            return jsonify({"deleted": True})
+        return _with_store(run)
+
+    @app.route("/api/imports/<job_id>/suggest-columns", methods=["POST"])
+    def suggest_columns_route(job_id):
+        from ..groq_categorize import suggest_columns
+
+        def run(store, job):
+            staging = store.get_staging(job_id) or {}
+            if job.file_kind != "tabular" or not staging.get("headers"):
+                raise ImportConflict("Column suggestions only apply to files read as tables.")
+            from ..ingest.columns import describe_extra_columns
+            headers = staging["headers"]
+            rows = [(r["row"], r["cells"]) for r in staging.get("sample_rows", [])]
+            columns = [{"index": c.index, "header": c.header, "kind": c.kind}
+                       for c in describe_extra_columns(headers, rows, set())]
+            roles, note = suggest_columns(columns, list(ROLES))
+            return jsonify({"roles": roles, "note": note})
+        return _with_job(job_id, run)
 
     @app.route("/api/rules", methods=["GET"])
     def list_rules():

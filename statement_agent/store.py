@@ -236,6 +236,24 @@ class Store:
     def close(self):
         self.conn.close()
 
+    def wipe(self) -> None:
+        """Deletes every statement, transaction, import, rule, link and remembered merchant."""
+        with self.conn:
+            for table in ("event_members", "economic_events", "link_decisions", "transactions", "documents",
+                          "import_jobs", "mapping_profiles", "correction_rules", "corrections_log", "merchant_knowledge"):
+                self.conn.execute(f"DELETE FROM {table}")
+        self.conn.execute("VACUUM")
+
+    def backup_to(self, path: str) -> None:
+        """A consistent copy of the ledger, safe while the app is running (SQLite's online backup)."""
+        import sqlite3 as _sqlite3
+
+        target = _sqlite3.connect(path)
+        try:
+            self.conn.backup(target)
+        finally:
+            target.close()
+
     def has_document(self, file_hash: str) -> bool:
         row = self.conn.execute("SELECT 1 FROM documents WHERE file_hash = ?", (file_hash,)).fetchone()
         return row is not None

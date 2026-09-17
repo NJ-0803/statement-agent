@@ -217,6 +217,58 @@ def _cmd_clients(args: argparse.Namespace) -> None:
         print(f"  {name} -> {db_path}{marker}")
 
 
+def cmd_backup(args: argparse.Namespace) -> None:
+    db_path = _resolve_db_or_exit(args)
+    if not os.path.exists(db_path):
+        sys.exit(f"No ledger at {db_path}.")
+    store = Store(db_path)
+    try:
+        store.backup_to(args.to)
+    finally:
+        store.close()
+    print(f"Backed up {db_path} to {args.to}. It holds your financial data: keep it somewhere safe.")
+
+
+def cmd_restore(args: argparse.Namespace) -> None:
+    import shutil
+    import sqlite3
+
+    db_path = _resolve_db_or_exit(args)
+    try:
+        conn = sqlite3.connect(f"file:{args.source}?mode=ro", uri=True)
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        conn.close()
+    except sqlite3.DatabaseError:
+        sys.exit(f"{args.source} isn't a ledger backup.")
+    if not {"transactions", "documents", "import_jobs"} <= tables:
+        sys.exit(f"{args.source} isn't a ledger backup.")
+    if os.path.exists(db_path) and not args.force:
+        sys.exit(f"{db_path} already exists. Add --force to replace it (make a backup first).")
+    shutil.copyfile(args.source, db_path)
+    Store(db_path).close()  # brings an older backup's schema up to date
+    print(f"Restored {db_path} from {args.source}.")
+
+
+def cmd_wipe(args: argparse.Namespace) -> None:
+    import shutil
+
+    db_path = _resolve_db_or_exit(args)
+    if not args.yes:
+        sys.exit("This deletes every statement, transaction, rule and uploaded file. Re-run with --yes to confirm.")
+    if os.path.exists(db_path):
+        store = Store(db_path)
+        try:
+            store.wipe()
+        finally:
+            store.close()
+    from .web.app import UPLOAD_DIR
+
+    if os.path.isdir(UPLOAD_DIR):
+        for name in os.listdir(UPLOAD_DIR):
+            shutil.rmtree(os.path.join(UPLOAD_DIR, name), ignore_errors=True)
+    print("Everything was deleted.")
+
+
 def main() -> None:
     from .env import load_dotenv
 
@@ -239,6 +291,25 @@ def main() -> None:
     p_ask.add_argument("--interactive", action="store_true")
     p_ask.add_argument("--trace", action="store_true", help="print the tool-call execution trace")
     p_ask.set_defaults(func=_cmd_ask)
+
+    p_backup = sub.add_parser("backup", help="copy the ledger to a file (safe while the app runs)")
+    p_backup.add_argument("--db", default=None)
+    p_backup.add_argument("--client", default=None)
+    p_backup.add_argument("--to", required=True)
+    p_backup.set_defaults(func=cmd_backup)
+
+    p_restore = sub.add_parser("restore", help="replace the ledger with a backup file")
+    p_restore.add_argument("--db", default=None)
+    p_restore.add_argument("--client", default=None)
+    p_restore.add_argument("--from", dest="source", required=True)
+    p_restore.add_argument("--force", action="store_true", help="overwrite an existing ledger")
+    p_restore.set_defaults(func=cmd_restore)
+
+    p_wipe = sub.add_parser("wipe", help="delete every statement, transaction, rule and upload")
+    p_wipe.add_argument("--db", default=None)
+    p_wipe.add_argument("--client", default=None)
+    p_wipe.add_argument("--yes", action="store_true", help="required: confirms you mean it")
+    p_wipe.set_defaults(func=cmd_wipe)
 
     p_serve = sub.add_parser("serve", help="run a small local web UI for asking questions in a browser")
     p_serve.add_argument("--db", default=None, help="ledger DB path (default: ledger.db)")

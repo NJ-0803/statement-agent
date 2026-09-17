@@ -133,3 +133,38 @@ def suggest_categories(merchants: list[str], categories: list[str]) -> tuple[dic
         except (ValueError, KeyError, IndexError, TypeError):
             continue  # a malformed answer for one batch is discarded, not guessed at
     return answers, note
+
+
+_COLUMN_PROMPT = (
+    "You map spreadsheet columns of a bank statement or expense sheet to roles. Roles: {roles}. Each column is "
+    "given by its header and the KIND of values it holds (not the values). Use each role at most once; leave a "
+    "column out if no role fits. Use either 'amount' or both 'debit' and 'credit'. Reply with JSON only: "
+    "{{\"roles\": {{<role>: <column index>}}}}."
+)
+
+
+def suggest_columns(columns: list[dict], roles: list[str]) -> tuple[dict[str, int], str | None]:
+    """columns: [{"index", "header", "kind"}] — no cell values are sent. Returns {role: column index}."""
+    if not groq_enabled():
+        return {}, "Groq isn't set up. Add GROQ_API_KEY to the .env file and restart the app."
+    model = os.environ.get("GROQ_MODEL") or DEFAULT_MODEL
+    body = {
+        "model": model, "temperature": 0, "response_format": {"type": "json_object"},
+        "messages": [{"role": "system", "content": _COLUMN_PROMPT.format(roles=", ".join(roles))},
+                     {"role": "user", "content": json.dumps({"columns": columns})}],
+    }
+    try:
+        payload = _request("/chat/completions", body)
+        data = json.loads(payload["choices"][0]["message"]["content"])
+    except urllib.error.HTTPError as e:
+        return {}, "Groq's free-tier limit was reached; try again in a minute." if e.code == 429 else f"Groq returned an error ({e.code})."
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return {}, "Groq couldn't be reached."
+    except (ValueError, KeyError, IndexError, TypeError):
+        return {}, "Groq's answer couldn't be read."
+    valid = {c["index"] for c in columns}
+    out: dict[str, int] = {}
+    for role, idx in (data.get("roles") or {}).items() if isinstance(data, dict) else []:
+        if role in roles and isinstance(idx, int) and idx in valid and idx not in out.values():
+            out[role] = idx
+    return out, None if out else "Groq didn't suggest anything usable."

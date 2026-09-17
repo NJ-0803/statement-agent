@@ -1089,3 +1089,88 @@ def net_spending(ledger: list[Transaction], events: list, *, category: str | Non
         "unlinked_refunds_not_applied": [_member_view(t, t.transaction_id, "refund") for t in unlinked[:20]],
         "purchase_count": len(purchases),
     }
+
+
+# ---------------------------------------------------------------------------
+# explain / convert / export
+# ---------------------------------------------------------------------------
+
+def explain_transaction(ledger: list[Transaction], events: list, transaction_id: str) -> dict:
+    """Everything known about one transaction: its source, how each field was read (reason codes), where its
+    category and kind came from, its links, and the rows just before and after it in the same statement."""
+    from ..corrections import describe_source
+    from ..ingest.confidence import explain
+
+    by_id = {t.transaction_id: t for t in ledger}
+    t = by_id.get(transaction_id)
+    if t is None:
+        return {"found": False, "transaction_id": transaction_id}
+    same_doc = sorted((x for x in ledger if x.document_id == t.document_id), key=lambda x: x.extraction_sequence or 0)
+    i = next(k for k, x in enumerate(same_doc) if x.transaction_id == transaction_id)
+    return {
+        "found": True,
+        "transaction": _view(t),
+        "how_fields_were_read": {f: explain(r) for f, r in t.field_reasons.items()},
+        "field_confidence": dict(t.field_confidence),
+        "category_and_names": describe_source(t, {}),
+        "kind": t.economic_type.value, "kind_source": t.economic_type_source,
+        "duplicate_of": t.duplicate_of, "duplicate_reason": t.duplicate_reason,
+        "links": [_event_view(e, by_id) for e in events if any(m.transaction_id == transaction_id for m in e.members)],
+        "neighbours": [_view(x) for x in same_doc[max(0, i - 2):i] + same_doc[i + 1:i + 3]],
+    }
+
+
+def convert_currency(amount: str, from_currency: str, to_currency: str, on: date) -> dict:
+    """One amount converted at the rate quoted for that date (bundled historical rates)."""
+    from ..fx import convert_amount
+
+    try:
+        value = Decimal(str(amount))
+    except InvalidOperation:
+        return {"ok": False, "error": f"not a number: {amount!r}"}
+    result = convert_amount(value, from_currency.upper(), to_currency.upper(), on)
+    if result is None:
+        return {"ok": False, "error": f"no {from_currency}->{to_currency} rate available for {on}"}
+    converted, rate = result
+    return {"ok": True, "amount": str(value), "from": from_currency.upper(), "to": to_currency.upper(),
+            "converted": str(converted), "rate": str(rate.rate), "rate_date": str(rate.rate_date), "source": rate.source}
+
+
+EXPORT_COLUMNS = ["date", "description", "merchant_name", "amount", "currency", "direction", "kind", "category",
+                  "category_source", "account", "source_file", "page", "row", "flagged", "transaction_id"]
+
+
+def export_rows(ledger: list[Transaction], *, date_from: date | None = None, date_to: date | None = None,
+                category: str | None = None) -> list[dict]:
+    rows = []
+    for t in sorted(ledger, key=lambda t: (t.transaction_date or date.min, t.extraction_sequence or 0)):
+        if (date_from or date_to) and not _in_range(t, date_from, date_to):
+            continue
+        if category and t.category != category:
+            continue
+        src = t.source
+        rows.append({
+            "date": t.transaction_date.isoformat() if t.transaction_date else "", "description": t.description_raw,
+            "merchant_name": t.merchant_canonical or "", "amount": str(t.amount), "currency": t.currency,
+            "direction": t.direction.value, "kind": t.economic_type.value, "category": t.category or "",
+            "category_source": t.category_source or "", "account": t.account_name or "",
+            "source_file": (src.file_path.rsplit("/", 1)[-1] if src and src.file_path else ""),
+            "page": src.page if src and src.page else "", "row": src.row if src and src.row else "",
+            "flagged": "yes" if not _is_clean(t) else "", "transaction_id": t.transaction_id,
+            **{f"extra: {k}": v for k, v in t.extra_fields.items()},
+        })
+    return rows
+
+
+def export_csv(rows: list[dict]) -> str:
+    import csv
+    import io
+
+    extra = sorted({k for r in rows for k in r if k not in EXPORT_COLUMNS})
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=EXPORT_COLUMNS + extra, extrasaction="ignore")
+    writer.writeheader()
+    for r in rows:
+        # a cell starting with = + - @ would run as a formula in a spreadsheet; neutralise it
+        writer.writerow({k: (f"'{v}" if isinstance(v, str) and v[:1] in "=+-@" else v) for k, v in r.items()})
+    return buf.getvalue()

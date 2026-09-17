@@ -112,13 +112,14 @@
   }
   $$('nav.tabs button').forEach((b) => b.addEventListener('click', () => showView(b.dataset.view)));
 
-  let ledgerReady = false, hasKey = false;
+  let ledgerReady = false, hasKey = false, hasGroq = false;
   async function checkStatus() {
     const bar = $('#status-bar');
     try {
       const s = await api('GET', '/api/status');
       ledgerReady = s.ready; hasKey = s.has_api_key;
       $('#groq-box').hidden = !(s.groq && s.ready);
+      hasGroq = !!s.groq;
       let text = s.ready
         ? `You have ${plural(s.transaction_count, 'transaction')} from ${plural(s.document_count, 'statement')}.`
         : s.reason;
@@ -448,6 +449,19 @@
       h('fieldset', {}, h('legend', { text: 'Dates are written as' }), radio('DMY', 'Day / month / year — 31/03/2025'), radio('MDY', 'Month / day / year — 03/31/2025')),
       h('p', { style: 'margin-top:1rem' }, h('label', { class: 'field', for: 'currency-choice', text: 'Currency for amounts without one' }), ccy),
     );
+    if (hasGroq) {
+      wrap.append(h('div', { class: 'actions' }, h('button', { type: 'button', class: 'btn quiet', text: 'Ask Groq to suggest the columns', onclick: async (e) => {
+        e.currentTarget.disabled = true;
+        try {
+          const r = await api('POST', `/api/imports/${p.id}/suggest-columns`);
+          const byCol = {};
+          Object.entries(r.roles || {}).forEach(([role, col]) => { byCol[col] = role; });
+          selects.forEach(({ sel }, j) => { sel.value = byCol[j] || ''; });
+          alerts.replaceChildren(h('p', { class: 'banner', role: 'status', text: r.note || 'Groq filled in its suggestions (only the column names and kinds of values were sent). Check them, then press “Use these columns”.' }));
+        } catch (err) { alerts.replaceChildren(errorBox(err.message)); }
+        e.currentTarget.disabled = false;
+      } })));
+    }
     wrap.append(h('div', { class: 'actions' }, h('button', { type: 'button', class: 'btn', text: 'Use these columns', onclick: async (e) => {
       const roles = {};
       for (const [j, { sel }] of selects.entries()) {
@@ -892,6 +906,19 @@
       );
     }));
   }
+
+  $('#wipe-run').addEventListener('click', async () => {
+    const note = $('#wipe-note');
+    const confirm = $('#wipe-confirm').value.trim();
+    if (confirm !== 'DELETE EVERYTHING') { note.textContent = 'Type DELETE EVERYTHING exactly to confirm.'; return; }
+    try {
+      await api('DELETE', '/api/everything', { confirm });
+      $('#wipe-confirm').value = '';
+      note.textContent = 'Everything was deleted.';
+      announce('Everything was deleted.');
+      checkStatus(); loadImports();
+    } catch (e) { note.textContent = e.message; }
+  });
 
   $('#groq-run').addEventListener('click', async (e) => {
     const btn = e.currentTarget;
