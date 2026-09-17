@@ -217,3 +217,62 @@ class TestMalformedAnswerTextArtifactsRejected:
         answer = FinalAnswer(answer_text="Spend was less than 10000 INR this month.", proposed_status="INSUFFICIENT_INFORMATION")
         v = verify(answer, trace=[])
         assert v.passed is True
+
+
+class TestClaimsAreBoundToTheirEvidence:
+    """From the completion brief: a tool result only supports a claim in the same currency, period and
+    category, and a money figure in prose needs backing even when it's a whole number. All four cases below
+    passed before this check existed."""
+
+    def _trace(self):
+        return [ToolCallRecord(
+            "aggregate_spending",
+            {"category": "Dining", "date_from": "2025-07-01", "date_to": "2025-07-31"},
+            {"by_currency": {"INR": {"verified_total": "500.00", "uncertain_total": "0", "verified_count": 2,
+                                     "uncertain_count": 0, "uncertain_reasons": []}}},
+        )]
+
+    def _verify(self, text, claims=(), status="VERIFIED"):
+        return verify(FinalAnswer(answer_text=text, proposed_status=status, verified_amounts=list(claims)), self._trace())
+
+    def test_the_same_number_in_another_currency_is_not_evidence(self):
+        v = self._verify("You spent USD 500.00 on dining in July.", [ClaimedAmount("USD", "500.00", "July dining")])
+        assert not v.passed and "not USD" in v.failures[0]
+
+    def test_a_different_month_is_not_evidence(self):
+        v = self._verify("You spent INR 500.00 on dining in August.", [ClaimedAmount("INR", "500.00", "August dining")])
+        assert not v.passed and "does not belong to the period" in v.failures[0]
+
+    def test_a_different_category_is_not_evidence(self):
+        v = self._verify("You spent INR 500.00 on groceries in July.", [ClaimedAmount("INR", "500.00", "July groceries")])
+        assert not v.passed and "is for Dining" in v.failures[0]
+
+    def test_a_whole_number_in_prose_needs_backing_too(self):
+        v = self._verify("You spent INR 999999 in July.")
+        assert not v.passed and "no matching number" in v.failures[0]
+
+    def test_calling_a_gross_total_net_of_refunds_fails(self):
+        v = self._verify("Net of refunds you spent INR 500.00 on dining in July.", [ClaimedAmount("INR", "500.00", "July dining")])
+        assert not v.passed and "net of refunds" in v.failures[0]
+
+    def test_the_matching_claim_still_passes(self):
+        v = self._verify("You spent INR 500.00 on dining in July.", [ClaimedAmount("INR", "500.00", "July dining")])
+        assert v.passed and v.status == "VERIFIED"
+
+    def test_net_figure_from_net_spending_passes(self):
+        trace = [ToolCallRecord("net_spending", {"date_from": "2025-07-01", "date_to": "2025-07-31"},
+                                {"per_currency": {"INR": {"gross_purchases": "10000.00", "linked_refunds": "3000.00",
+                                                          "net_spending": "7000.00"}}})]
+        answer = FinalAnswer(answer_text="After refunds you spent INR 7000.00 in July.", proposed_status="VERIFIED",
+                             verified_amounts=[ClaimedAmount("INR", "7000.00", "July net spending")])
+        assert verify(answer, trace).passed
+
+    def test_a_refusal_that_made_no_tool_calls_is_not_treated_as_a_claim(self):
+        answer = FinalAnswer(answer_text="I can't answer that; spending was under INR 10000 at most.",
+                             proposed_status="INSUFFICIENT_INFORMATION")
+        assert verify(answer, trace=[]).passed  # nothing was looked up, and nothing is being certified
+
+    def test_an_unsupported_figure_alongside_real_tool_calls_still_fails(self):
+        v = self._verify("Dining was INR 500.00, and your rent is about INR 45000.",
+                         [ClaimedAmount("INR", "500.00", "July dining")])
+        assert not v.passed and "45000" in v.failures[0]
