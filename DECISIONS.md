@@ -1822,3 +1822,48 @@ synthetic; the browser extension wasn't connected, so the UI changes were syntax
 only through the API.
 
 449 tests passing (17 new in `tests/test_any_format.py`).
+
+## 38. PDF statements read by column position; password-protected and sideways PDFs
+
+The PDF reader took each line's leading date and its **last** number as the amount. On any statement with a
+Balance column, that number is the balance (EC-12, confirmed here: the same synthetic statement gives
+9,550.00 for a 450.00 withdrawal). It also couldn't tell a withdrawal column from a deposit column.
+
+**`ingest/pdf_columns.py`.**
+- Finds the table's header line: a line whose parts are named like a date column and a money column,
+  using the same multilingual header vocabulary as spreadsheets.
+- Takes each column's position from where its header sits, and places every word of every later line
+  into a column. Money words (digits, Rs./₹/USD, CR/DR) go by their right edge, since statements
+  right-align money; text goes by its left edge between column midpoints.
+- A later page's own header is used for that page.
+- Lines far below the table (more than about twice the usual line spacing) are footers or notices: they're
+  read for stated totals and security warnings, and never become rows or continuations. A notice can't be
+  glued onto the last transaction.
+- The result is an ordinary `TableCandidate`, with a row → page map and document hints (type, period,
+  account, security warnings, stated figures). The PDF then goes through the *same* mapping, sign and
+  date checks, balance continuity, reconciliation, extra columns, column editor and review as a
+  spreadsheet. The import's kind becomes `tabular`, and rows are cited with their page and
+  `NATIVE_TABLE`.
+- Pages whose text runs sideways or upside down are turned upright first, using the dominant text
+  direction pymupdf reports.
+- The line-based reader is still used when no header is found, or when any page has no text (scanned
+  pages still go to vision OCR).
+
+On the four sample text PDFs, the column reader gives **identical** transactions, kinds, categories and
+flags to the old reader. The document-type classifier is shared between the two readers so it can't
+drift.
+
+**Passwords.** An encrypted PDF now stops at a new `needs_password` state instead of failing. The web page
+asks for the password, and `unlock_import` opens the file with it and writes an unlocked copy over the
+upload, which is only allowed inside the app's own upload folder. The password is used once, in memory:
+it's never stored, logged or put in staging, and the input is cleared as soon as it's submitted. After 10
+wrong tries the import fails. The CLI reports `needs_password` rather than guessing. Duplicate detection
+then uses the unlocked file's hash, so the same locked file added twice after unlocking is caught, but a
+locked copy and an already-unlocked copy of the same statement are not matched by hash.
+
+Not done: tables without a header line, tables with merged or spanning header cells, and several tables
+with different layouts in one PDF (only the first header's columns are used for pages without their own
+header). All fixtures are synthetic PDFs drawn in the tests; the browser extension wasn't connected, so the
+password screen was tested through the API only.
+
+459 tests passing (10 new in `tests/test_pdf_columns.py`).

@@ -62,6 +62,7 @@ _SIGNED_OUT_FORMATS = {".ofx": "OFX", ".qfx": "QFX", ".qif": "QIF", ".sta": "MT9
 STATE_MESSAGES = {
     ImportState.UPLOADED: "Waiting to be read.",
     ImportState.ANALYZING: "Reading your file…",
+    ImportState.NEEDS_PASSWORD: "This PDF is password-protected. Please type its password to open it.",
     ImportState.NEEDS_MAPPING: "Please check how I read the columns.",
     ImportState.NEEDS_REVIEW: "A few items need your check.",
     ImportState.READY: "Everything checks out. Ready to add.",
@@ -145,8 +146,17 @@ def analyze_import(store: Store, job_id: str, *, attempt_vision: bool = True) ->
             return job
         if job.file_kind == "tabular":
             _analyze_tabular(store, job, staging)
+        elif job.file_kind == "pdf" and _pdf_is_locked(job.stored_path):
+            job.state, job.error_summary = ImportState.NEEDS_PASSWORD, None
+            staging["password_attempts"] = (store.get_staging(job.job_id) or {}).get("password_attempts", 0)
+            store.save_job(job, staging)
+            return job
         elif job.file_kind == "pdf":
-            _analyze_pdf(job, staging, attempt_vision=attempt_vision)
+            if _pdf_has_readable_table(job):
+                job.file_kind = "tabular"  # read by column position, then reviewed like a spreadsheet
+                _analyze_tabular(store, job, staging)
+            else:
+                _analyze_pdf(job, staging, attempt_vision=attempt_vision)
         elif job.file_kind == "image":
             _analyze_image(job, staging, attempt_vision=attempt_vision)
         else:
@@ -227,7 +237,7 @@ def update_review(store: Store, job_id: str, data: dict) -> ImportJob:
 
 def _editable(store: Store, job_id: str) -> tuple[ImportJob, dict]:
     job = _get(store, job_id)
-    if job.state in TERMINAL_IMPORT_STATES or job.state in (ImportState.UPLOADED, ImportState.ANALYZING):
+    if job.state in TERMINAL_IMPORT_STATES or job.state in (ImportState.UPLOADED, ImportState.ANALYZING, ImportState.NEEDS_PASSWORD):
         raise ImportConflict(f"This import can't be changed now ({STATE_MESSAGES[job.state]})")
     return job, store.get_staging(job_id) or {}
 
@@ -294,7 +304,8 @@ def _run_tabular(job: ImportJob, staging: dict, decisions: ReviewDecisions) -> C
     sniffed = sniff_file(job.stored_path)
     mapping = ColumnMapping.from_dict(staging["mapping"]) if staging.get("mapping") else None
     ext = os.path.splitext(job.stored_path)[1].lower()
-    method = (ExtractionMethod.XLSX_ROW if ext in (".xlsx", ".xls", ".ods")
+    method = (ExtractionMethod.NATIVE_TABLE if ext == ".pdf"
+              else ExtractionMethod.XLSX_ROW if ext in (".xlsx", ".xls", ".ods")
               else ExtractionMethod.TABLE_ROW if ext in SHEET_EXTENSIONS
               else ExtractionMethod.RECORD if ext in EXTRA_TABULAR_EXTENSIONS - {".tsv", ".txt", ".tab", ".psv", ".dat"}
               else ExtractionMethod.CSV_ROW)
@@ -320,6 +331,58 @@ def _run_tabular(job: ImportJob, staging: dict, decisions: ReviewDecisions) -> C
             c["sample"] = [mask_card_number(v) for v in c["sample"]]
     staging["preamble"] = [{"row": n, "cells": cells} for n, cells in table.preamble[:10]] if table else []
     return result
+
+
+MAX_PASSWORD_ATTEMPTS = 10
+
+
+def _pdf_is_locked(path: str) -> bool:
+    import pymupdf
+
+    with pymupdf.open(path) as d:
+        return bool(d.needs_pass)
+
+
+def unlock_import(store: Store, job_id: str, password: str, *, dest_path: str) -> ImportJob:
+    """Opens an encrypted PDF with the password the person typed and writes an unlocked copy to dest_path
+    (the caller's own upload folder), replacing the locked file. The password is used once, in memory: it's
+    never stored, logged or put in the staging data. After too many wrong tries the import fails."""
+    import pymupdf
+
+    job = _get(store, job_id)
+    if job.state != ImportState.NEEDS_PASSWORD:
+        raise ImportConflict("This import isn't waiting for a password.")
+    staging = store.get_staging(job_id) or {}
+    with pymupdf.open(job.stored_path) as d:
+        if not d.authenticate(password or ""):
+            staging["password_attempts"] = staging.get("password_attempts", 0) + 1
+            if staging["password_attempts"] >= MAX_PASSWORD_ATTEMPTS:
+                _fail(store, job, staging, "That password didn't work too many times, so I stopped trying. Add the file again to retry.")
+                raise ImportConflict(job.error_summary)
+            store.save_job(job, staging)
+            left = MAX_PASSWORD_ATTEMPTS - staging["password_attempts"]
+            raise MappingError(f"That password didn't work. Please check it and try again ({left} tries left).")
+        tmp = dest_path + ".unlocking"
+        d.save(tmp, encryption=pymupdf.PDF_ENCRYPT_NONE)
+    os.replace(tmp, dest_path)
+    job.stored_path = dest_path
+    job.state = ImportState.UPLOADED
+    store.save_job(job, {"password_attempts": staging.get("password_attempts", 0)})
+    return job
+
+
+def _pdf_has_readable_table(job: ImportJob) -> bool:
+    """A PDF is read by columns only when every page has real text (scanned pages still need vision OCR,
+    which the line-based path handles) and a table header was found."""
+    import pymupdf
+
+    with pymupdf.open(job.stored_path) as d:
+        if d.needs_pass or d.page_count > MAX_PDF_PAGES:
+            return False
+        if any(not page.get_text("text").strip() for page in d):
+            return False
+    sniffed = sniff_file(job.stored_path)
+    return sniffed.best is not None
 
 
 def _analyze_pdf(job: ImportJob, staging: dict, *, attempt_vision: bool) -> None:
@@ -632,6 +695,9 @@ def ingest_file(path: str, store: Store, *, attempt_vision: bool = True) -> Inge
 
     if job.state == ImportState.DUPLICATE:
         return IngestReport(path, "skipped_duplicate", job_id=job.job_id)
+    if job.state == ImportState.NEEDS_PASSWORD:
+        return IngestReport(path, "needs_password", 0, warnings + [
+            "this PDF is password-protected; add it through the web page, which asks for the password"], job.job_id)
     if job.state == ImportState.NEEDS_MAPPING:
         m = staging.get("mapping") or {}
         detail = [f"missing required column(s): {m['missing_required']}" for _ in [0] if m.get("missing_required")]

@@ -49,7 +49,7 @@ from ..corrections import CorrectionError, describe_source, rule_matches, sugges
 from ..ingest.mapping import MappingError
 from ..ingest.pipeline import (
     SUPPORTED_EXTENSIONS, ImportConflict, analyze_import, cancel_import, commit_import, create_import, job_view,
-    rollback_import, update_mapping, update_review,
+    rollback_import, unlock_import, update_mapping, update_review,
 )
 from ..ingest.sniff import detect_encoding
 from ..ingest.vocab import KNOWN_CURRENCIES, ROLE_LABELS, ROLES
@@ -343,6 +343,24 @@ def create_app(db_path: str = "ledger.db", *, upload_dir: str = UPLOAD_DIR, run_
             job = rollback_import(store, job_id)
             _discard_upload(job.stored_path)
             return jsonify(job_view(job, store.get_staging(job_id)))
+        return _with_job(job_id, run)
+
+    @app.route("/api/imports/<job_id>/password", methods=["POST"])
+    def post_password(job_id):
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict) or not isinstance(data.get("password"), str):
+            return _error("password is required", 400)
+
+        def run(store, job):
+            path = os.path.realpath(job.stored_path)
+            if not path.startswith(os.path.realpath(app.config["UPLOAD_DIR"]) + os.sep):
+                raise ImportConflict("Only files added through this page can be unlocked here.")
+            unlock_import(store, job_id, data["password"], dest_path=path)
+            job = store.get_job(job_id)
+            job.state = ImportState.ANALYZING
+            store.save_job(job)
+            _schedule(job_id)
+            return jsonify(job_view(store.get_job(job_id), store.get_staging(job_id))), 202
         return _with_job(job_id, run)
 
     @app.route("/api/imports/<job_id>/retry", methods=["POST"])

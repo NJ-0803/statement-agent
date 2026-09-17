@@ -73,7 +73,7 @@
   function statusBadge(state) {
     const map = {
       committed: ['good', 'Added'], ready: ['good', 'Ready to add'], needs_review: ['warn', 'Needs your check'],
-      needs_mapping: ['warn', 'Check the columns'], analyzing: ['info', 'Reading…'], uploaded: ['info', 'Waiting'],
+      needs_mapping: ['warn', 'Check the columns'], needs_password: ['warn', 'Needs its password'], analyzing: ['info', 'Reading…'], uploaded: ['info', 'Waiting'],
       failed: ['bad', "Couldn't use this file"], duplicate: ['info', 'Already added'],
       rolled_back: ['info', 'Removed'], cancelled: ['info', 'Cancelled'],
     };
@@ -253,6 +253,7 @@
   function route(p) {
     if (p.state === 'committed') return renderDone(p);
     if (['needs_mapping', 'needs_review', 'ready'].includes(p.state)) return renderCheck(p);
+    if (p.state === 'needs_password') return renderPassword(p);
     return renderProblem(p);
   }
 
@@ -261,6 +262,36 @@
   }
 
   // ------------------------------------------------------------------ unusable file
+
+  function renderPassword(p) {
+    const box = $('#step-check');
+    const alerts = h('div');
+    const input = h('input', { type: 'password', id: 'pdf-password', autocomplete: 'off' });
+    const form = h('form', {},
+      h('label', { class: 'field', for: 'pdf-password', text: 'Password for this PDF' }), input,
+      h('p', { class: 'muted', text: 'Banks often use part of your name and date of birth. The password is only used to open this file; it is not saved.' }),
+      h('div', { class: 'actions' }, h('button', { type: 'submit', class: 'btn primary', text: 'Open the file' }),
+        h('button', { type: 'button', class: 'btn quiet', text: 'Cancel this file', onclick: async () => {
+          try { await api('DELETE', `/api/imports/${p.id}`); } catch (e) { announce(e.message); }
+          nextJob();
+        } })));
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const password = input.value;
+      input.value = '';
+      try {
+        await api('POST', `/api/imports/${p.id}/password`, { password });
+      } catch (err) { alerts.replaceChildren(errorBox(err.message)); input.focus(); return; }
+      setStep('files', { progress: true });
+      $('#progress-list').replaceChildren(h('li', { text: `Reading ${p.file}…` }));
+      let job;
+      do { await sleep(1000); job = await api('GET', `/api/imports/${p.id}`); } while (WAITING.has(job.state));
+      openJob(p.id);
+    });
+    box.replaceChildren(h('div', { class: 'panel' }, h('h2', { text: p.file }), statusBadge(p.state),
+      h('p', { style: 'margin-top:.75rem', text: p.message }), alerts, form, remainingNote()));
+    setStep('check'); focusHeading(box);
+  }
 
   function renderProblem(p) {
     const box = $('#step-check');
@@ -618,7 +649,7 @@
           try { await api('POST', `/api/imports/${job.id}/rollback`); announce(`${job.file} removed.`); } catch (e) { announce(e.message); }
           checkStatus(); loadImports();
         }));
-      } else if (['needs_mapping', 'needs_review', 'ready'].includes(job.state)) {
+      } else if (['needs_mapping', 'needs_review', 'ready', 'needs_password'].includes(job.state)) {
         actions.append(h('button', { type: 'button', class: 'btn primary', text: 'Continue', onclick: () => openJob(job.id) }));
         actions.append(h('button', { type: 'button', class: 'btn quiet', text: 'Cancel', onclick: async () => {
           try { await api('DELETE', `/api/imports/${job.id}`); } catch (e) { announce(e.message); }

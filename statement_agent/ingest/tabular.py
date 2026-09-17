@@ -340,7 +340,7 @@ def normalize_table(
             balance_after=balance_after,
             extra_fields=extras,
             source=SourceRef(
-                file_path=path, file_hash=fhash, row=row_no, raw_text=str(cell_map),
+                file_path=path, file_hash=fhash, row=row_no, page=table.row_pages.get(row_no), raw_text=str(cell_map),
                 extraction_method=extraction_method, extraction_confidence=1.0,
             ),
         )
@@ -359,6 +359,10 @@ def normalize_table(
         by_key[key] = txn
         last_txn_candidate = cand
 
+    if table.document_hints:
+        from .pdf_columns import apply_document_hints
+
+        apply_document_hints(document, transactions, table.document_hints)
     transactions, balance_issues = _balance_pass(
         transactions, candidates, model, decisions, stated_opening, document
     )

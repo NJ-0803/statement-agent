@@ -160,6 +160,7 @@ class Transaction:
 class ImportState(str, Enum):
     UPLOADED = "uploaded"
     ANALYZING = "analyzing"
+    NEEDS_PASSWORD = "needs_password"  # an encrypted PDF; waiting for its password (never stored)
     NEEDS_MAPPING = "needs_mapping"  # a required column (date, or how amounts are laid out) isn't certain
     NEEDS_REVIEW = "needs_review"  # mapping is fine, but some rows/assumptions need the user's check
     READY = "ready"  # nothing unresolved — can be committed

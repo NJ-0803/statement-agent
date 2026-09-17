@@ -38,6 +38,8 @@ class TableCandidate:
     score: float = 0.0
     evidence: list[str] = field(default_factory=list)
     duplicate_headers: list[str] = field(default_factory=list)
+    row_pages: dict[int, int] = field(default_factory=dict)  # PDF tables: source row -> page number
+    document_hints: dict = field(default_factory=dict)  # PDF tables: period, account, doc type, text outside the table
 
     @property
     def label(self) -> str:
@@ -275,6 +277,12 @@ def sniff_file(path: str) -> SniffResult:
     ext = os.path.splitext(path)[1].lower()
     if ext == ".xlsx":
         return sniff_xlsx(path)
+    if ext == ".pdf":
+        from .pdf_columns import read_pdf_table
+
+        table = read_pdf_table(path)
+        return SniffResult(kind="pdf", candidates=[table] if table else [],
+                           evidence=["Read the PDF's table by column position"] if table else ["No table header found in this PDF"])
     from .formats import TEXT_TABLE_EXTENSIONS, read_sheets
 
     if ext in (".csv", *TEXT_TABLE_EXTENSIONS) or not ext:

@@ -62,7 +62,8 @@ statement's own stated total — is implemented and unit-tested (`resolve.reconc
 against here, and no realistic way to fabricate a convincing test fixture for "OCR got a specific
 digit wrong" without it being an arbitrary, ungrounded guess at what OCR failure modes look like.
 
-**EC-12 — running balance mistaken for the transaction amount.** The amount-anchor regex in
+**EC-12 — running balance mistaken for the transaction amount.** *(Fixed for PDFs with a table header by
+column reading, `DECISIONS.md` §38; still open for headerless PDFs.)* The amount-anchor regex in
 `pdf_native.py` takes the *last* numeric token on a line as the amount. If a statement had a running
 balance column after the actual amount (`Amazon 500.00 24,735.62`), the balance would be picked up
 instead. No statement in this dataset has a balance column — this is a real, confirmed structural risk
@@ -394,8 +395,9 @@ research work that can't be done in code at all.
 **Quality (roadmap Phase 1)**
 - Fixtures are synthetic. There's no consented, de-identified corpus of real bank exports, no golden
   benchmark separate from the development fixtures, and no per-format accuracy dashboard.
-- PDFs still use the date-at-start / amount-at-end row rule. There's no password-protected or rotated-page
-  handling. (Stated balances and totals are now read and reconciled — `DECISIONS.md` §34 — but only from
+- Text PDFs with a table header are read by column position (§38); PDFs without a header line still use
+  the date-at-start / amount-at-end rule (the EC-12 balance risk remains for those). Password-protected and
+  sideways PDFs are handled. Headerless tables, spanning header cells and mixed table layouts aren't. (Stated balances and totals are now read and reconciled — `DECISIONS.md` §34 — but only from
   labelled figures; a statement that states none can't be reconciled.)
 - Reconciliation can't check a statement with rows in a second currency (`CANNOT_CHECK`): the card's
   converted amount isn't extracted.
