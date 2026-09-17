@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import ssl
 import urllib.error
 import urllib.request
 
@@ -37,6 +38,17 @@ def groq_enabled() -> bool:
     return bool(os.environ.get("GROQ_API_KEY")) and os.environ.get("STATEMENT_AGENT_GROQ", "").lower() != "off"
 
 
+def _tls_context() -> ssl.SSLContext:
+    """Some Python installs on macOS ship without a CA list (python.org builds before running 'Install
+    Certificates'), so every HTTPS call fails. certifi's bundle is installed with the Anthropic SDK; use it."""
+    try:
+        import certifi
+
+        return ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        return ssl.create_default_context()
+
+
 def _request(path: str, body: dict | None = None) -> dict:
     req = urllib.request.Request(
         f"{API}{path}", data=json.dumps(body).encode() if body is not None else None,
@@ -44,7 +56,7 @@ def _request(path: str, body: dict | None = None) -> dict:
                  "User-Agent": "statement-agent"},
         method="POST" if body is not None else "GET",
     )
-    with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:  # noqa: S310 - fixed https endpoint
+    with urllib.request.urlopen(req, timeout=TIMEOUT, context=_tls_context()) as resp:  # noqa: S310 - fixed https endpoint
         return json.loads(resp.read().decode())
 
 

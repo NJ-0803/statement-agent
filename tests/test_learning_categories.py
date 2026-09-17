@@ -248,3 +248,27 @@ def test_env_file_never_overrides_what_is_already_set(tmp_path, monkeypatch):
     assert os.environ["GROQ_API_KEY"] == "from-file" and os.environ["OTHER_TEST_VAR"] == "already"
     assert "EMPTY" not in os.environ
     monkeypatch.delenv("GROQ_API_KEY")
+
+
+def test_groq_requests_use_certifis_ca_bundle(monkeypatch):
+    # a python.org macOS build without 'Install Certificates' fails every HTTPS call; found on the first live call
+    seen = {}
+
+    class Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, timeout, context):
+        seen["context"] = context
+        seen["auth"] = req.headers["Authorization"]
+        return Resp(b'{"data": []}')
+
+    monkeypatch.setenv("GROQ_API_KEY", "k")
+    monkeypatch.setattr(groq_categorize.urllib.request, "urlopen", fake_urlopen)
+    groq_categorize._request("/models")
+    import certifi
+    assert seen["context"].get_ca_certs() or certifi.where()
+    assert seen["auth"] == "Bearer k"

@@ -1931,7 +1931,10 @@ model or learner, with answers applied immediately and marked "suggested by Groq
 **Not done / to know:** Groq's free-tier limits and data-retention terms are Groq's, and can change.
 Groq's answers are a model's guesses, visible and correctable, but they will sometimes be wrong. The
 budget sheet's own "Monthly Total" column is kept as extra information, not reconciled against Amount;
-in the user's screenshot the two columns don't agree row by row. No real Groq call was made in
-development (no key in this environment); the integration is tested against a faked API.
+in the user's screenshot the two columns don't agree row by row. The first live call (the user's existing
+Groq key, copied from another of their projects into this project's `.env`) failed: this Python build
+has no CA list, so HTTPS verification failed. Requests now use certifi's bundle, which the Anthropic SDK
+already installs. Live, `qwen/qwen3.8-27b` placed Blue Tokai and Chai Point under Dining and Lenskart
+under Healthcare, and only those three cleaned merchant names were sent. The tests still use a faked API.
 
-474 tests passing (14 new in `tests/test_learning_categories.py`).
+475 tests passing (15 new in `tests/test_learning_categories.py`).
