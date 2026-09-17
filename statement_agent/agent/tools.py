@@ -38,12 +38,14 @@ class TxnView:
     date: str | None
     merchant: str | None
     merchant_normalized: str | None
+    merchant_name: str | None  # the name the person chose (a correction), when they chose one
     description: str
     amount: str
     currency: str
     direction: str
     economic_type: str
     category: str | None
+    category_source: str | None  # "keywords" | "file" | "rule" (the person's correction rule) | "you" (set by hand)
     account: str | None  # which of the source's own accounts/cards this row belongs to, when declared
     source_file: str
     source_page: int | None
@@ -63,12 +65,14 @@ def _view(t: Transaction) -> TxnView:
         date=t.transaction_date.isoformat() if t.transaction_date else None,
         merchant=t.merchant_raw,
         merchant_normalized=t.merchant_normalized,
+        merchant_name=t.merchant_canonical,
         description=t.description_raw,
         amount=str(t.amount),
         currency=t.currency,
         direction=t.direction.value,
         economic_type=t.economic_type.value,
         category=t.category,
+        category_source=t.category_source,
         account=t.account_name,
         source_file=src.file_path if src else "",
         source_page=src.page if src else None,
@@ -162,7 +166,7 @@ def search_transactions(
         if date_from or date_to:
             if not _in_range(t, date_from, date_to):
                 continue
-        if merchant_contains and merchant_contains.lower() not in (t.merchant_raw or "").lower():
+        if merchant_contains and merchant_contains.lower() not in f"{t.merchant_raw or ''} {t.merchant_canonical or ''}".lower():
             continue
         if currency and t.currency != currency:
             continue
@@ -358,9 +362,10 @@ def aggregate_spending(
             elif group_by == "category":
                 key = t.category or "UNCATEGORIZED"
             elif group_by == "merchant":
-                # normalized, not raw: consolidates the same real merchant recorded
-                # with an inconsistent trailing corporate suffix across documents
-                key = t.merchant_normalized or t.merchant_raw or "UNKNOWN"
+                # the person's chosen name first (a correction rule groups every "UPI-SWIGGY-..."
+                # variant), then normalized, not raw: consolidates the same real merchant
+                # recorded with an inconsistent trailing corporate suffix across documents
+                key = t.merchant_canonical or t.merchant_normalized or t.merchant_raw or "UNKNOWN"
             elif group_by == "account":
                 key = t.account_name or "UNKNOWN ACCOUNT"
             else:
@@ -595,7 +600,7 @@ def top_n_per_group(
         elif group_by == "account":
             key = t.account_name or "UNKNOWN ACCOUNT"
         else:  # merchant
-            key = t.merchant_normalized or t.merchant_raw or "UNKNOWN"
+            key = t.merchant_canonical or t.merchant_normalized or t.merchant_raw or "UNKNOWN"
         groups.setdefault(key, []).append(t)
 
     table = {

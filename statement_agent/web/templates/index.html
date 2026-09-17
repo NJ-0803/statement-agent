@@ -151,6 +151,13 @@
   ul.imports li { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 1rem; margin-top: 0.75rem; }
   ul.imports .row { display: flex; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap; align-items: baseline; }
 
+  .filter-bar { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: flex-end; }
+  .filter-bar > div { flex: 1 1 12rem; }
+  .filter-bar input, .filter-bar select { width: 100%; }
+  .txn-amount { font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .editor { margin-top: 0.75rem; border-top: 1px solid var(--line); padding-top: 0.75rem; }
+  .editor input[type="text"] { width: 100%; }
+  .editor .indent { margin: 0.25rem 0 0 1.75rem; }
   #chat { display: flex; flex-direction: column; gap: 1rem; margin-top: 1rem; }
   .q { align-self: flex-end; background: var(--accent-soft); border-radius: var(--radius); padding: 0.6rem 0.9rem; max-width: 85%; }
   .a { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 1rem; }
@@ -179,6 +186,7 @@
       <nav class="tabs" aria-label="Main">
         <button type="button" data-view="add" aria-current="page">Add statements</button>
         <button type="button" data-view="list">Your statements</button>
+        <button type="button" data-view="txns">Transactions</button>
         <button type="button" data-view="ask">Ask a question</button>
       </nav>
     </div>
@@ -233,6 +241,29 @@
       <h2 id="list-title">Your statements</h2>
       <p class="muted">Everything you've added, newest first. You can undo any import — it removes only that file's transactions.</p>
       <ul class="imports" id="imports-list"></ul>
+    </section>
+
+    <!-- ============ Transactions: check and correct categories ============ -->
+    <section id="view-txns" aria-labelledby="txns-title" hidden>
+      <h2 id="txns-title">Transactions</h2>
+      <p class="muted">Check the category of anything you've added. If one is wrong, change it — for just that transaction, or for every transaction from the same place, now and in future files.</p>
+      <form id="txn-filter" class="panel filter-bar" role="search">
+        <div>
+          <label class="field" for="txn-q">Search descriptions</label>
+          <input id="txn-q" type="text" autocomplete="off" placeholder="For example: swiggy">
+        </div>
+        <div>
+          <label class="field" for="txn-category">Category</label>
+          <select id="txn-category"><option value="">All</option></select>
+        </div>
+        <button class="btn primary" type="submit">Show</button>
+      </form>
+      <p id="txn-count" class="muted" role="status"></p>
+      <ul class="imports" id="txn-list"></ul>
+      <div class="actions"><button type="button" class="btn quiet" id="txn-more" hidden>Show more</button></div>
+      <h3 id="rules-title">Your rules</h3>
+      <p class="muted">Rules you've made. Removing one puts its transactions back to how they were worked out automatically.</p>
+      <ul class="imports" id="rules-list" aria-labelledby="rules-title"></ul>
     </section>
 
     <!-- ============ Ask a question ============ -->

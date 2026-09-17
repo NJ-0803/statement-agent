@@ -105,8 +105,9 @@
     $$('nav.tabs button').forEach((b) => b.toggleAttribute('aria-current', false));
     const tab = $(`nav.tabs button[data-view="${name}"]`);
     tab.setAttribute('aria-current', 'page');
-    ['add', 'list', 'ask'].forEach((v) => { $(`#view-${v}`).hidden = v !== name; });
+    ['add', 'list', 'txns', 'ask'].forEach((v) => { $(`#view-${v}`).hidden = v !== name; });
     if (name === 'list') loadImports();
+    if (name === 'txns') loadTransactions();
     if (name === 'ask') $('#question').focus();
   }
   $$('nav.tabs button').forEach((b) => b.addEventListener('click', () => showView(b.dataset.view)));
@@ -433,13 +434,14 @@
     return h('div', {}, h('h3', { text: 'First transactions' }),
       h('div', { class: 'table-scroll', tabindex: '0', role: 'region', 'aria-label': 'First transactions' },
         h('table', {},
-          h('thead', {}, h('tr', {}, h('th', { text: 'Date' }), h('th', { text: 'Description' }), h('th', { class: 'num', text: 'Money in' }), h('th', { class: 'num', text: 'Money out' }), h('th', { class: 'num', text: 'Balance' }))),
+          h('thead', {}, h('tr', {}, h('th', { text: 'Date' }), h('th', { text: 'Description' }), h('th', { text: 'Category' }), h('th', { class: 'num', text: 'Money in' }), h('th', { class: 'num', text: 'Money out' }), h('th', { class: 'num', text: 'Balance' }))),
           h('tbody', {}, ...txns.slice(0, 10).map((t) => h('tr', {},
             h('td', { text: niceDate(t.date) }),
             h('td', {}, t.description,
               t.flagged ? h('span', { class: 'status warn', style: 'margin-left:.4rem', text: 'Worth a look' }) : null,
               (t.unsure || []).length ? h('span', { class: 'status warn', style: 'margin-left:.4rem', text: 'Not sure' }) : null,
               (t.unsure || []).length ? h('div', { class: 'muted', text: t.unsure.map((u) => `${FIELD_WORDS[u.field] || u.field}: ${u.reason}`).join('. ') }) : null),
+            h('td', {}, t.category || '', t.why && t.why.category.startsWith('your rule') ? h('div', { class: 'muted', text: 'from your rule' }) : null),
             h('td', { class: 'num', text: t.direction === 'CREDIT' ? money(t.amount, t.currency) : '' }),
             h('td', { class: 'num', text: t.direction === 'DEBIT' ? money(t.amount, t.currency) : '' }),
             h('td', { class: 'num', text: t.balance_after ? money(t.balance_after, t.currency) : '' }),
@@ -615,6 +617,160 @@
       );
     }));
   }
+
+  // ------------------------------------------------------------------ transactions & corrections
+
+  const txnState = { offset: 0, categories: [], editing: null };
+  const PAGE = 50;
+
+  function signedMoney(t) { return `${t.direction === 'CREDIT' ? '+' : '−'}${money(t.amount, t.currency)}`; }
+
+  function categoryLine(t) {
+    if (!t.is_purchase && t.direction === 'CREDIT') return 'Money in — not counted as spending.';
+    if (!t.is_purchase) return `${t.kind.charAt(0).toUpperCase()}${t.kind.slice(1)} — not counted as spending.`;
+    return t.category ? `Category: ${t.category} — ${t.why.category}.` : 'No category yet.';
+  }
+
+  async function loadTransactions({ append = false } = {}) {
+    const list = $('#txn-list');
+    if (!append) { txnState.offset = 0; list.replaceChildren(h('li', { text: 'Loading…' })); }
+    const params = new URLSearchParams({ q: $('#txn-q').value.trim(), category: $('#txn-category').value, limit: PAGE, offset: txnState.offset });
+    let data;
+    try { data = await api('GET', `/api/transactions?${params}`); } catch (e) { list.replaceChildren(h('li', {}, errorBox(e.message))); return; }
+    txnState.categories = data.categories;
+    fillCategoryFilter(data.categories);
+    const items = data.transactions.map(txnItem);
+    if (append) list.append(...items); else list.replaceChildren(...(items.length ? items : [h('li', { text: 'No transactions match.' })]));
+    txnState.offset += data.transactions.length;
+    $('#txn-count').textContent = data.total ? `Showing ${txnState.offset} of ${plural(data.total, 'transaction')}.` : '';
+    $('#txn-more').hidden = txnState.offset >= data.total;
+    renderRules(data.rules);
+  }
+
+  function fillCategoryFilter(categories) {
+    const sel = $('#txn-category');
+    const current = sel.value;
+    sel.replaceChildren(h('option', { value: '', text: 'All' }), h('option', { value: '__none__', text: 'Purchases without a category' }),
+      ...categories.map((c) => h('option', { value: c, text: c })));
+    sel.value = current;
+  }
+
+  function txnItem(t) {
+    const li = h('li', {});
+    const render = () => {
+      li.replaceChildren(...[
+        h('div', { class: 'row' }, h('strong', { text: t.merchant_name || t.description }), h('span', { class: 'txn-amount', text: signedMoney(t) })),
+        h('p', { class: 'muted', style: 'margin:.2rem 0 0', text: [niceDate(t.date), t.merchant_name ? t.description : null, t.file].filter(Boolean).join(' · ') }),
+        h('p', { style: 'margin:.35rem 0 0', text: categoryLine(t) }),
+        t.merchant_name ? h('p', { class: 'muted', style: 'margin:.1rem 0 0', text: `Merchant name “${t.merchant_name}” — ${t.why.merchant}.` }) : null,
+        h('div', { class: 'actions', style: 'margin-top:.5rem' },
+          h('button', { type: 'button', class: 'btn', text: 'Change', 'aria-label': `Change ${t.description}`, onclick: () => li.replaceChildren(editor(t, render)) })),
+      ].filter(Boolean));
+    };
+    render();
+    return li;
+  }
+
+  let previewTimer = null;
+  function editor(t, close) {
+    const id = t.id.slice(0, 8);
+    const alerts = h('div');
+    const catInput = h('input', { type: 'text', id: `cat-${id}`, list: `cats-${id}`, value: t.category || '', autocomplete: 'off' });
+    const nameInput = h('input', { type: 'text', id: `name-${id}`, value: t.merchant_name || '', autocomplete: 'off', placeholder: 'For example: Swiggy' });
+    const patternInput = h('input', { type: 'text', id: `pat-${id}`, value: t.suggested_pattern, autocomplete: 'off' });
+    const preview = h('p', { class: 'muted indent', role: 'status' });
+    const one = h('input', { type: 'radio', name: `scope-${id}`, value: 'one', checked: true });
+    const rule = h('input', { type: 'radio', name: `scope-${id}`, value: 'rule' });
+    const patternBox = h('div', { class: 'indent', hidden: true },
+      h('label', { class: 'field', for: `pat-${id}`, text: 'Descriptions containing these words' }), patternInput);
+
+    const refreshPreview = () => {
+      clearTimeout(previewTimer);
+      if (!rule.checked) { preview.textContent = ''; return; }
+      previewTimer = setTimeout(async () => {
+        try {
+          const p = await api('POST', '/api/rules/preview', { pattern: patternInput.value });
+          const eg = p.examples.length ? ` For example: ${p.examples.slice(0, 3).join('; ')}.` : '';
+          const mine = p.set_by_you ? ` ${plural(p.set_by_you, 'of them was', 'of them were')} changed by you one at a time and will stay as you set.` : '';
+          preview.textContent = `This covers ${plural(p.matches, 'transaction')} you've already added, and any future ones that match.${eg}${mine}`;
+        } catch (e) { preview.textContent = e.message; }
+      }, 250);
+    };
+    [one, rule].forEach((r) => r.addEventListener('change', () => { patternBox.hidden = !rule.checked; refreshPreview(); }));
+    patternInput.addEventListener('input', refreshPreview);
+
+    const save = async (body) => {
+      alerts.replaceChildren();
+      try {
+        const res = await api('POST', `/api/transactions/${t.id}/correction`, body);
+        const n = res.changed;
+        announce(n ? `Saved. ${plural(n, 'transaction')} updated.` : 'Saved. Nothing needed to change.');
+        await loadTransactions();
+      } catch (e) { alerts.replaceChildren(errorBox(e.message)); }
+    };
+
+    const buttons = h('div', { class: 'actions' },
+      h('button', { type: 'button', class: 'btn primary', text: 'Save', onclick: () => {
+        const body = { scope: rule.checked ? 'rule' : 'one' };
+        const cat = catInput.value.trim(), name = nameInput.value.trim();
+        if (t.is_purchase && cat !== (t.category || '')) body.category = cat || null;
+        if (name !== (t.merchant_name || '')) body.merchant_name = name || null;
+        if (rule.checked) {
+          body.pattern = patternInput.value;
+          if (t.is_purchase && cat && body.category === undefined) body.category = cat;
+          if (name && body.merchant_name === undefined) body.merchant_name = name;
+        }
+        if (Object.keys(body).length === 1) { alerts.replaceChildren(errorBox('Nothing has changed yet.')); return; }
+        save(body);
+      } }),
+      h('button', { type: 'button', class: 'btn quiet', text: 'Cancel', onclick: close }),
+      (t.category_source === 'you' || t.merchant_source === 'you')
+        ? h('button', { type: 'button', class: 'btn quiet', text: 'Go back to automatic', onclick: () => save({
+          scope: 'one', ...(t.category_source === 'you' ? { category: null } : {}), ...(t.merchant_source === 'you' ? { merchant_name: null } : {}),
+        }) })
+        : null,
+    );
+
+    return h('div', {},
+      h('div', { class: 'row' }, h('strong', { text: t.description }), h('span', { class: 'txn-amount', text: signedMoney(t) })),
+      h('p', { class: 'muted', style: 'margin:.2rem 0 0', text: [niceDate(t.date), t.file].filter(Boolean).join(' · ') }),
+      h('div', { class: 'editor' },
+        alerts,
+        t.is_purchase
+          ? h('p', {}, h('label', { class: 'field', for: `cat-${id}`, text: 'Category' }), catInput,
+            h('datalist', { id: `cats-${id}` }, ...txnState.categories.map((c) => h('option', { value: c }))))
+          : h('p', { class: 'muted', text: `${categoryLine(t)} Only purchases have a category.` }),
+        h('p', {}, h('label', { class: 'field', for: `name-${id}`, text: 'Merchant name (optional)' }), nameInput),
+        h('fieldset', {}, h('legend', { text: 'Apply this to' }),
+          h('label', { class: 'choice' }, one, 'Only this transaction'),
+          h('label', { class: 'choice' }, rule, 'Every transaction from the same place, now and in future files'),
+          patternBox, preview),
+        buttons,
+      ),
+    );
+  }
+
+  function renderRules(rules) {
+    const list = $('#rules-list');
+    if (!rules.length) { list.replaceChildren(h('li', { class: 'muted', text: 'No rules yet. Choose “Every transaction from the same place” when you change one.' })); return; }
+    list.replaceChildren(...rules.map((r) => {
+      const sets = [r.category ? `category ${r.category}` : null, r.merchant_name ? `merchant name “${r.merchant_name}”` : null].filter(Boolean).join(' and ');
+      return h('li', {},
+        h('p', { style: 'margin:0', text: `Descriptions containing “${r.pattern}” get ${sets}.` }),
+        h('p', { class: 'muted', style: 'margin:.2rem 0 0', text: `Used for ${plural(r.applied_to, 'transaction')} right now.` }),
+        h('div', { class: 'actions', style: 'margin-top:.5rem' }, confirmButton('Remove rule', 'Yes, remove it', async () => {
+          try {
+            const res = await api('DELETE', `/api/rules/${r.id}`);
+            announce(`Rule removed. ${plural(res.changed, 'transaction')} went back to automatic.`);
+          } catch (e) { announce(e.message); }
+          loadTransactions();
+        })),
+      );
+    }));
+  }
+
+  $('#txn-filter').addEventListener('submit', (e) => { e.preventDefault(); loadTransactions(); });
+  $('#txn-more').addEventListener('click', () => loadTransactions({ append: true }));
 
   // ------------------------------------------------------------------ ask a question
 

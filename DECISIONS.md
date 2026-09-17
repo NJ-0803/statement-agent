@@ -1661,3 +1661,52 @@ acknowledgement on the issue, not a raised confidence — except where the perso
 
 Fixtures are synthetic; none of the `dataset_public/` statements state balances or totals, so they all
 correctly report "nothing to check against". 386 tests passing (31 new in `tests/test_trust_core.py`).
+
+## 35. Phase 1, part 2 — correction-driven categories and merchant names
+
+Before this, nothing could correct a category: `Store.update_transaction_fields` existed but nothing called
+it, and only column mappings were remembered. The roadmap asks for "correction-driven category and merchant
+normalization". Its design constraint still applies: a model never rewrites transactions.
+
+**What was built:**
+
+- `corrections.py` — rules of the form "descriptions containing these words get category X and/or merchant
+  name Y". Matching is on *words*, not raw text: real narrations carry a new reference on every row
+  (`UPI-SWIGGY-BANGALORE-482934812`), so words containing digits and payment-rail codes (UPI, NEFT, POS, …)
+  are dropped, and the rule's words must appear side by side and in order. A rule for "SWIGGY" therefore
+  matches next month's `UPI-SWIGGY-MUMBAI-…` but not "SWIGGYMART". When several rules match, the one with
+  more words wins, then the most recently changed — deterministic, and explainable.
+- Precedence in `resolve.assign_categories`: a row you changed yourself (`category_source="you"`, never
+  recomputed) > your rule > our keyword list > the file's own category column. Every row now records
+  `category_source` and, for rules, `category_rule_id`, so the UI can say *why* ("your rule for
+  descriptions containing “SWIGGY”", "worked out from the merchant name", "the category in your file").
+- Merchant names go into a new `merchant_canonical`. `merchant_raw` stays the citation value, and
+  `merchant_normalized` still drives duplicate detection: two different narrations renamed to "Swiggy" on
+  the same day for the same amount are two orders, not a duplicate. The agent's merchant grouping and
+  `merchant_contains` search use the chosen name first, and `TxnView` exposes it with `category_source`.
+- `ledger_edits.py` — change one row, add/update a rule from the row you're looking at, remove a rule,
+  preview what a rule would cover. Each is **one** database transaction that saves the change, writes
+  `corrections_log` (before/after, kept even for removed rules), and re-applies every rule to the whole
+  ledger with the same resolver functions an import uses. Removing a rule puts its rows back to
+  automatic. Making a rule from a row you'd set by hand hands that row to the rule; other hand-set rows
+  keep your choice, and the preview says how many.
+- Imports apply rules during analysis, so the "Check what I found" table already shows the corrected
+  category (marked "from your rule"), and the commit stores it.
+- UI: a **Transactions** tab — search and category filter (including "purchases without a category"),
+  each row's category and why, a **Change** editor (category with suggestions, optional merchant name,
+  "only this transaction" or "every transaction from the same place, now and in future files" with the
+  suggested words editable and a live count of what they'd cover), "Go back to automatic", and a "Your
+  rules" list with two-click removal. Only purchases can get a category; other rows say why not.
+- API: `GET /api/transactions`, `POST /api/transactions/<id>/correction`, `GET /api/rules`,
+  `POST /api/rules/preview`, `DELETE /api/rules/<id>` — CSRF-protected like the rest, plain-language 400s.
+
+**Found in the browser check (fixed):** `Element.replaceChildren` turns a `null` child into the text
+"null", unlike the page's own `h()` helper. Salary credits showed as "Refund". That label is real data: there's no
+income type, so any credit that isn't a reversal, cashback, reimbursement or card payment is typed
+`REFUND` (older behavior, not changed here). The page now says "Money in" for any credit that isn't a
+purchase.
+
+**Not done (listed in `NOT_IMPLEMENTED.md` §I):** correcting the *economic type* (salary vs refund vs
+transfer), rules on amount or account, rule import/export, and per-person rules (still one local ledger).
+
+410 tests passing (24 new in `tests/test_corrections.py`).

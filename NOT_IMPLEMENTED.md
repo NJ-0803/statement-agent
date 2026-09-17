@@ -396,7 +396,9 @@ research work that can't be done in code at all.
 - Merged cells in XLSX are read as blank (openpyxl read-only mode); formulas use cached values only.
 - Header vocabulary is English. A German or Hindi header goes to needs_mapping, which is honest but
   unhelpful.
-- Category corrections aren't remembered yet. Only column mappings are. (Phase 1, part 2 — next.)
+- Category and merchant-name corrections are remembered as word rules (`DECISIONS.md` §35), but the
+  *economic type* can't be corrected, and there's no income type: a credit that isn't a reversal,
+  cashback, reimbursement or card payment is typed `REFUND`, so a salary is a "refund" to the agent. Rules can't match on amount or account, and can't be exported or shared.
 - No source viewer that opens the original page or row next to an answer. "Why?" shows the cited rows'
   extracted text.
 

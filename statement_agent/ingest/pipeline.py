@@ -28,6 +28,7 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from decimal import Decimal
 
+from ..corrections import describe_source
 from ..resolve import resolve_all
 from ..schema import (
     Direction, Document, ImportJob, ImportState, IssueSeverity, TERMINAL_IMPORT_STATES, ValidationIssue,
@@ -424,7 +425,8 @@ def _evaluate(store: Store, job: ImportJob, staging: dict):
         counts = {"rows": len(all_txns) + len(staging.get("ignored_lines", [])), "transactions": len(transactions),
                   "ignored": len(ignored), "issues": 0}
 
-    anomalies = resolve_all(document, transactions) if transactions else []
+    rules = store.list_rules()
+    anomalies = resolve_all(document, transactions, rules) if transactions else []
     for flag in anomalies:
         t = flag.transaction
         t.notes = f"{t.notes} | FLAGGED: {flag.reason}".strip(" |")
@@ -469,7 +471,9 @@ def _evaluate(store: Store, job: ImportJob, staging: dict):
     staging["issues"] = [_issue_dict(i) for i in issues]
     staging["counts"] = counts
     staging["ignored_rows"] = ignored[:300]
-    staging["preview_transactions"] = [_txn_preview(t) for t in transactions[:PREVIEW_ROWS]]
+    rules_by_id = {r.rule_id: r for r in rules}
+    staging["preview_transactions"] = [_txn_preview(t, rules_by_id) for t in transactions[:PREVIEW_ROWS]]
+    staging["rule_matches"] = sum(1 for t in transactions if t.category_source == "rule" or t.merchant_source == "rule")
     staging["summary"] = _summary(document, transactions)
     staging["anomaly_count"] = len(anomalies)
     store.save_job(job, staging)
@@ -534,7 +538,7 @@ def _issue_dict(i: ValidationIssue) -> dict:
     return d
 
 
-def _txn_preview(t) -> dict:
+def _txn_preview(t, rules_by_id=None) -> dict:
     return {
         "key": _row_key(t),
         "date": t.transaction_date.isoformat() if t.transaction_date else None,
@@ -544,6 +548,8 @@ def _txn_preview(t) -> dict:
         "flagged": "FLAGGED:" in t.notes or t.duplicate_of is not None,
         "source_text": (t.source.raw_text if t.source else "")[:300],
         "unsure": [{"field": f, "confidence": c, "reason": explain(r)} for f, c, r in low_confidence_fields(t)],
+        "category": t.category, "merchant_name": t.merchant_canonical,
+        "why": describe_source(t, rules_by_id or {}),
     }
 
 

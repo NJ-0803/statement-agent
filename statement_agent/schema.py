@@ -132,6 +132,16 @@ class Transaction:
     # REASONS) saying HOW the value was arrived at — the "derived rule" half of every field's provenance
     import_job_id: str | None = None  # which ImportJob committed this row — what makes undo-by-import possible
 
+    # Corrections (DECISIONS.md §35). category_source says where `category` came from: "keywords" (our
+    # merchant keyword list), "file" (the source's own category column), "rule" (a correction rule you
+    # made — category_rule_id names it) or "you" (you changed this one row; never recomputed after that).
+    category_source: str | None = None
+    category_rule_id: str | None = None
+    merchant_canonical: str | None = None  # the merchant name you chose ("Swiggy") — used for grouping in
+    # answers; merchant_raw stays the citation value and merchant_normalized still drives duplicate checks
+    merchant_source: str | None = None  # "rule" | "you" | None
+    merchant_rule_id: str | None = None
+
 
 # ---------------------------------------------------------------------------
 # Staged imports — upload -> analyze -> map -> review -> commit (-> rollback)
@@ -214,3 +224,23 @@ class ImportJob:
     document_id: str | None = None
     transaction_count: int = 0
     mapping_fingerprint: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Corrections — what a person told us, remembered and re-applied deterministically
+# ---------------------------------------------------------------------------
+
+@dataclass
+class CorrectionRule:
+    """"Every transaction whose description contains <pattern>: category X and/or merchant name Y."
+
+    `pattern` is stored as normalized words (corrections.merchant_words), and matches a transaction whose
+    own description words contain those words in the same order, side by side."""
+
+    rule_id: str
+    pattern: str
+    category: str | None = None
+    merchant_name: str | None = None
+    created_at: str = ""
+    updated_at: str = ""
+    source_transaction_id: str | None = None  # the row the person was looking at when they made the rule

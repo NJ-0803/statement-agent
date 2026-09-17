@@ -15,8 +15,9 @@ from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal
 
+from .corrections import assign_merchant_names, best_rule
 from .normalize import normalize_merchant
-from .schema import Direction, Document, EconomicType, Transaction
+from .schema import CorrectionRule, Direction, Document, EconomicType, Transaction
 
 # ---------------------------------------------------------------------------
 # Economic-type refinement — catches DEBIT/CREDIT rows that extraction-time
@@ -152,14 +153,24 @@ def assign_merchant_normalization(transactions: list[Transaction]) -> None:
         t.merchant_normalized = normalize_merchant(t.merchant_raw)
 
 
-def assign_categories(transactions: list[Transaction]) -> None:
+def assign_categories(transactions: list[Transaction], rules: list[CorrectionRule] = ()) -> None:
+    """Category precedence: a row you changed yourself (never recomputed) > your correction rule > our
+    keyword list > the source file's own category column > none."""
+    category_rules = [r for r in rules if r.category]
     for t in transactions:
+        if t.category_source == "you":
+            continue
         if t.economic_type != EconomicType.PURCHASE:
             continue  # only PURCHASE events get a spend category — everything else is economic-type-only
+        t.category_rule_id = None
+        rule = best_rule(t, category_rules)
         result = categorize(t.merchant_raw or t.description_raw)
-        if result.category is not None:
+        if rule is not None:
+            t.category, t.category_confidence, t.category_source, t.category_rule_id = rule.category, 1.0, "rule", rule.rule_id
+        elif result.category is not None:
             t.category = result.category
             t.category_confidence = result.confidence
+            t.category_source = "keywords"
         elif t.category_declared:
             # Our keyword list didn't match (common for generic/anonymized merchant text
             # like "Hardware Store" or "Phone Company"), but the source file declared its
@@ -167,9 +178,11 @@ def assign_categories(transactions: list[Transaction]) -> None:
             # lower confidence since it's the file's own taxonomy, not verified against ours.
             t.category = t.category_declared
             t.category_confidence = 0.5
+            t.category_source = "file"
         else:
             t.category = None
             t.category_confidence = 0.0
+            t.category_source = None
 
 
 # ---------------------------------------------------------------------------
@@ -411,13 +424,14 @@ def detect_anomalies(transactions: list[Transaction], *, z_threshold: float = 3.
     return flags + dup_flags
 
 
-def resolve_all(doc: Document, transactions: list[Transaction]) -> list[AnomalyFlag]:
+def resolve_all(doc: Document, transactions: list[Transaction], rules: list[CorrectionRule] = ()) -> list[AnomalyFlag]:
     """Runs the full deterministic resolution pass for one document's transactions."""
     assign_extraction_sequence(transactions)
     assign_merchant_normalization(transactions)
     refine_all_economic_types(transactions)
     detect_duplicates(transactions)
-    assign_categories(transactions)
+    assign_merchant_names(transactions, list(rules))
+    assign_categories(transactions, list(rules))
     reconcile_document(doc, transactions)
     flag_unusual_structure(doc, transactions)
     return detect_anomalies(transactions)

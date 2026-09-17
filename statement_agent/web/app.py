@@ -13,6 +13,12 @@ Imports are jobs (see ingest/pipeline.py), exposed as a small JSON API:
     POST   /api/imports/<id>/retry       re-read a failed import
     DELETE /api/imports/<id>             cancel an import that wasn't added
 
+    GET    /api/transactions             added transactions (search, filter), with why each has its category
+    POST   /api/transactions/<id>/correction   change one row, or make a rule for matching rows
+    GET    /api/rules                    your correction rules
+    POST   /api/rules/preview            which rows a rule with these words would cover
+    DELETE /api/rules/<id>               remove a rule; affected rows go back to automatic
+
 Reading a file (OCR in particular) runs on a small background worker, not in the request thread;
 the browser polls the job. Every /api/ error is JSON, including 404/405/413. State-changing API
 calls must carry the page's CSRF token in an X-CSRF-Token header: this server listens on
@@ -35,6 +41,8 @@ from flask import Flask, jsonify, render_template, request
 from werkzeug.exceptions import HTTPException
 from werkzeug.utils import secure_filename
 
+from .. import ledger_edits
+from ..corrections import CorrectionError, describe_source, rule_matches, suggested_pattern
 from ..ingest.mapping import MappingError
 from ..ingest.pipeline import (
     SUPPORTED_EXTENSIONS, ImportConflict, analyze_import, cancel_import, commit_import, create_import, job_view,
@@ -42,7 +50,7 @@ from ..ingest.pipeline import (
 )
 from ..ingest.sniff import detect_encoding
 from ..ingest.vocab import KNOWN_CURRENCIES, ROLE_LABELS, ROLES
-from ..schema import ImportState
+from ..schema import EconomicType, ImportState
 from ..store import Store
 
 # Where browser uploads are kept, one server-generated directory per import — separate from
@@ -340,6 +348,121 @@ def create_app(db_path: str = "ledger.db", *, upload_dir: str = UPLOAD_DIR, run_
             _discard_upload(job.stored_path)
             return jsonify(job_view(job, store.get_staging(job_id)))
         return _with_job(job_id, run)
+
+    # -- corrections -------------------------------------------------------------------------
+
+    def _with_store(fn):
+        store = _store()
+        try:
+            return fn(store)
+        except CorrectionError as e:
+            return _error(str(e), 400)
+        except KeyError:
+            return _error("Not found.", 404)
+        finally:
+            store.close()
+
+    def _txn_view(t, rules_by_id):
+        src = t.source
+        return {
+            "id": t.transaction_id,
+            "date": t.transaction_date.isoformat() if t.transaction_date else None,
+            "description": t.description_raw, "amount": str(t.amount), "currency": t.currency,
+            "direction": t.direction.value, "is_purchase": t.economic_type == EconomicType.PURCHASE,
+            "kind": t.economic_type.value.replace("_", " ").lower(),
+            "category": t.category, "category_source": t.category_source,
+            "merchant_name": t.merchant_canonical, "merchant_source": t.merchant_source,
+            "why": describe_source(t, rules_by_id), "suggested_pattern": suggested_pattern(t),
+            "file": os.path.basename(src.file_path) if src and src.file_path else None,
+        }
+
+    def _rule_view(rule, ledger):
+        covered = [t for t in ledger if t.category_rule_id == rule.rule_id or t.merchant_rule_id == rule.rule_id]
+        return {
+            "id": rule.rule_id, "pattern": rule.pattern, "category": rule.category,
+            "merchant_name": rule.merchant_name, "updated_at": rule.updated_at,
+            "applied_to": len(covered), "matches": sum(1 for t in ledger if rule_matches(rule, t)),
+        }
+
+    @app.route("/api/transactions", methods=["GET"])
+    def list_transactions():
+        if not os.path.exists(app.config["DB_PATH"]):
+            return jsonify({"total": 0, "transactions": [], "categories": [], "rules": []})
+
+        def run(store):
+            rules = store.list_rules()
+            by_id = {r.rule_id: r for r in rules}
+            ledger = store.all_transactions()
+            q = (request.args.get("q") or "").strip().lower()
+            category = request.args.get("category") or ""
+            rows = [
+                t for t in ledger
+                if (not q or q in f"{t.description_raw} {t.merchant_canonical or ''}".lower())
+                and (not category or (t.category or "") == ("" if category == "__none__" else category))
+                and (category != "__none__" or t.economic_type == EconomicType.PURCHASE)
+            ]
+            rows.sort(key=lambda t: (t.transaction_date.isoformat() if t.transaction_date else "", t.extraction_sequence or 0), reverse=True)
+            try:
+                limit = max(1, min(int(request.args.get("limit", 100)), 500))
+                offset = max(0, int(request.args.get("offset", 0)))
+            except ValueError:
+                return _error("limit and offset must be numbers", 400)
+            return jsonify({
+                "total": len(rows),
+                "transactions": [_txn_view(t, by_id) for t in rows[offset:offset + limit]],
+                "categories": ledger_edits.category_choices(store),
+                "rules": [_rule_view(r, ledger) for r in rules],
+            })
+        return _with_store(run)
+
+    def _json_body():
+        data = request.get_json(silent=True)
+        return data if isinstance(data, dict) else None
+
+    @app.route("/api/transactions/<transaction_id>/correction", methods=["POST"])
+    def post_correction(transaction_id):
+        data = _json_body()
+        if data is None:
+            return _error("Expected a JSON object.", 400)
+        fields = {k: data[k] for k in ("category", "merchant_name") if k in data}
+        if any(v is not None and not isinstance(v, str) for v in fields.values()):
+            return _error("category and merchant_name must be text or null", 400)
+        scope = data.get("scope", "one")
+
+        def run(store):
+            if scope == "one":
+                result = ledger_edits.correct_one(store, transaction_id, **fields)
+            elif scope == "rule":
+                pattern = data.get("pattern")
+                if pattern is not None and not isinstance(pattern, str):
+                    return _error("pattern must be text", 400)
+                result = ledger_edits.add_rule(store, transaction_id, pattern=pattern, **fields)
+            else:
+                return _error("scope must be 'one' or 'rule'", 400)
+            by_id = {r.rule_id: r for r in store.list_rules()}
+            body = {"changed": result["changed"], "transaction": _txn_view(result["transaction"], by_id)}
+            if result.get("rule"):
+                body["rule"] = _rule_view(result["rule"], store.all_transactions())
+            return jsonify(body)
+        return _with_store(run)
+
+    @app.route("/api/rules", methods=["GET"])
+    def list_rules():
+        def run(store):
+            ledger = store.all_transactions()
+            return jsonify({"rules": [_rule_view(r, ledger) for r in store.list_rules()]})
+        return _with_store(run)
+
+    @app.route("/api/rules/preview", methods=["POST"])
+    def preview_rule():
+        data = _json_body()
+        if data is None or not isinstance(data.get("pattern"), str):
+            return _error("pattern is required", 400)
+        return _with_store(lambda store: jsonify(ledger_edits.preview_rule(store, data["pattern"])))
+
+    @app.route("/api/rules/<rule_id>", methods=["DELETE"])
+    def delete_rule(rule_id):
+        return _with_store(lambda store: jsonify(ledger_edits.remove_rule(store, rule_id)))
 
     # -- questions ---------------------------------------------------------------------------
 

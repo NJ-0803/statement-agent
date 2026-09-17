@@ -20,7 +20,8 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from .schema import (
-    Direction, Document, EconomicType, ExtractionMethod, ImportJob, ImportState, SourceRef, Transaction,
+    CorrectionRule, Direction, Document, EconomicType, ExtractionMethod, ImportJob, ImportState, SourceRef,
+    Transaction,
 )
 
 _SCHEMA = """
@@ -95,6 +96,26 @@ CREATE TABLE IF NOT EXISTS import_jobs (
     staging_json TEXT
 );
 
+CREATE TABLE IF NOT EXISTS correction_rules (
+    rule_id TEXT PRIMARY KEY,
+    pattern TEXT NOT NULL,
+    category TEXT,
+    merchant_name TEXT,
+    created_at TEXT,
+    updated_at TEXT,
+    source_transaction_id TEXT
+);
+
+-- every correction a person made, including rules later removed: what changed, from what, to what
+CREATE TABLE IF NOT EXISTS corrections_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    action TEXT NOT NULL,  -- set_one | clear_one | add_rule | update_rule | remove_rule
+    transaction_id TEXT,
+    rule_id TEXT,
+    detail TEXT NOT NULL  -- JSON
+);
+
 CREATE TABLE IF NOT EXISTS mapping_profiles (
     fingerprint TEXT PRIMARY KEY,
     mapping_json TEXT NOT NULL,
@@ -130,6 +151,11 @@ _COLUMN_MIGRATIONS = {
         ("field_confidence", "TEXT"),  # JSON object
         ("import_job_id", "TEXT"),
         ("field_reasons", "TEXT"),  # JSON object
+        ("category_source", "TEXT"),
+        ("category_rule_id", "TEXT"),
+        ("merchant_canonical", "TEXT"),
+        ("merchant_source", "TEXT"),
+        ("merchant_rule_id", "TEXT"),
     ],
     "documents": [
         ("import_job_id", "TEXT"),
@@ -223,6 +249,7 @@ class Store:
                 t.value_date.isoformat() if t.value_date else None, t.reference_id, _dec(t.balance_after),
                 json.dumps(t.field_confidence) if t.field_confidence else None, t.import_job_id,
                 json.dumps(t.field_reasons) if t.field_reasons else None,
+                t.category_source, t.category_rule_id, t.merchant_canonical, t.merchant_source, t.merchant_rule_id,
             ))
         self.conn.executemany(
             """
@@ -233,8 +260,9 @@ class Store:
                 category_declared, account_name,
                 source_file_path, source_page, source_row, source_raw_text, extraction_method,
                 extraction_confidence, duplicate_of, duplicate_reason, notes,
-                value_date, reference_id, balance_after, field_confidence, import_job_id, field_reasons
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                value_date, reference_id, balance_after, field_confidence, import_job_id, field_reasons,
+                category_source, category_rule_id, merchant_canonical, merchant_source, merchant_rule_id
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             rows,
         )
@@ -273,6 +301,83 @@ class Store:
         values = list(fields.values()) + [transaction_id]
         self.conn.execute(f"UPDATE transactions SET {set_clause} WHERE transaction_id = ?", values)
         self.conn.commit()
+
+    def get_transaction(self, transaction_id: str) -> Transaction | None:
+        row = self.conn.execute("SELECT * FROM transactions WHERE transaction_id = ?", (transaction_id,)).fetchone()
+        return _row_to_transaction(row) if row else None
+
+    # -- corrections --------------------------------------------------------------------
+
+    def list_rules(self) -> list[CorrectionRule]:
+        rows = self.conn.execute("SELECT * FROM correction_rules ORDER BY updated_at DESC, rule_id").fetchall()
+        return [CorrectionRule(**dict(r)) for r in rows]
+
+    def get_rule(self, rule_id: str) -> CorrectionRule | None:
+        row = self.conn.execute("SELECT * FROM correction_rules WHERE rule_id = ?", (rule_id,)).fetchone()
+        return CorrectionRule(**dict(row)) if row else None
+
+    def find_rule(self, pattern: str) -> CorrectionRule | None:
+        row = self.conn.execute("SELECT * FROM correction_rules WHERE pattern = ?", (pattern,)).fetchone()
+        return CorrectionRule(**dict(row)) if row else None
+
+    def _save_rule(self, rule: CorrectionRule) -> None:
+        rule.updated_at = _now()
+        rule.created_at = rule.created_at or rule.updated_at
+        self.conn.execute(
+            """INSERT INTO correction_rules (rule_id, pattern, category, merchant_name, created_at, updated_at,
+                   source_transaction_id) VALUES (?,?,?,?,?,?,?)
+               ON CONFLICT(rule_id) DO UPDATE SET pattern=excluded.pattern, category=excluded.category,
+                   merchant_name=excluded.merchant_name, updated_at=excluded.updated_at""",
+            (rule.rule_id, rule.pattern, rule.category, rule.merchant_name, rule.created_at, rule.updated_at,
+             rule.source_transaction_id),
+        )
+
+    def _log(self, action: str, detail: dict, *, transaction_id: str | None = None, rule_id: str | None = None) -> None:
+        self.conn.execute(
+            "INSERT INTO corrections_log (created_at, action, transaction_id, rule_id, detail) VALUES (?,?,?,?,?)",
+            (_now(), action, transaction_id, rule_id, json.dumps(detail)),
+        )
+
+    def corrections_log(self, *, transaction_id: str | None = None) -> list[dict]:
+        sql, args = "SELECT * FROM corrections_log", ()
+        if transaction_id:
+            sql, args = sql + " WHERE transaction_id = ?", (transaction_id,)
+        rows = self.conn.execute(sql + " ORDER BY id", args).fetchall()
+        return [{**dict(r), "detail": json.loads(r["detail"])} for r in rows]
+
+    def _write_correction_fields(self, txns: list[Transaction]) -> None:
+        self.conn.executemany(
+            f"UPDATE transactions SET category = ?, category_confidence = ?, "
+            f"{', '.join(f'{c} = ?' for c in _CORRECTION_COLUMNS)} WHERE transaction_id = ?",
+            [(t.category, t.category_confidence, *(getattr(t, c) for c in _CORRECTION_COLUMNS), t.transaction_id)
+             for t in txns],
+        )
+
+    def _reapply(self, compute) -> int:
+        """Recomputes category/merchant name for every row with the current rules; returns rows changed."""
+        rules = self.list_rules()
+        txns = self.all_transactions()
+        before = {t.transaction_id: _correction_state(t) for t in txns}
+        compute(txns, rules)
+        changed = [t for t in txns if _correction_state(t) != before[t.transaction_id]]
+        self._write_correction_fields(changed)
+        return len(changed)
+
+    def apply_correction(self, transaction: Transaction, *, action: str, detail: dict,
+                         rule: CorrectionRule | None = None, remove_rule_id: str | None = None, compute) -> int:
+        """One correction, atomically: save/remove the rule and/or the one row, log it, re-apply rules to the
+        whole ledger. `compute(transactions, rules)` is the resolver's own assignment step, so the ledger is
+        recomputed by exactly the code an import uses. Returns how many rows changed."""
+        with self.conn:
+            if rule is not None:
+                self._save_rule(rule)
+            if remove_rule_id is not None:
+                self.conn.execute("DELETE FROM correction_rules WHERE rule_id = ?", (remove_rule_id,))
+            if transaction is not None:
+                self._write_correction_fields([transaction])
+            self._log(action, detail, transaction_id=transaction.transaction_id if transaction else None,
+                      rule_id=(rule.rule_id if rule else remove_rule_id))
+            return self._reapply(compute)
 
     # -- import jobs ------------------------------------------------------------------
 
@@ -410,6 +515,13 @@ class Store:
         return len(ids)
 
 
+_CORRECTION_COLUMNS = ("category_source", "category_rule_id", "merchant_canonical", "merchant_source", "merchant_rule_id")
+
+
+def _correction_state(t: Transaction) -> tuple:
+    return (t.category, t.category_confidence, *(getattr(t, c) for c in _CORRECTION_COLUMNS))
+
+
 def _row_to_job(r: sqlite3.Row) -> ImportJob:
     return ImportJob(
         job_id=r["job_id"], state=ImportState(r["state"]), original_filename=r["original_filename"] or "",
@@ -460,6 +572,7 @@ def _row_to_transaction(r: sqlite3.Row) -> Transaction:
         field_confidence=json.loads(r["field_confidence"]) if "field_confidence" in keys and r["field_confidence"] else {},
         import_job_id=r["import_job_id"] if "import_job_id" in keys else None,
         field_reasons=json.loads(r["field_reasons"]) if "field_reasons" in keys and r["field_reasons"] else {},
+        **{k: r[k] for k in _CORRECTION_COLUMNS if k in keys},
     )
 
 
@@ -507,6 +620,7 @@ def transaction_to_dict(t: Transaction) -> dict:
         "reference_id": t.reference_id, "balance_after": _dec(t.balance_after),
         "field_confidence": dict(t.field_confidence), "field_reasons": dict(t.field_reasons),
         "import_job_id": t.import_job_id,
+        **{k: getattr(t, k) for k in _CORRECTION_COLUMNS},
         "source": None if src is None else {
             "file_path": src.file_path, "file_hash": src.file_hash, "page": src.page, "row": src.row,
             "raw_text": src.raw_text, "extraction_method": src.extraction_method.value,
@@ -533,6 +647,7 @@ def transaction_from_dict(d: dict) -> Transaction:
         reference_id=d.get("reference_id"), balance_after=_undec(d.get("balance_after")),
         field_confidence=dict(d.get("field_confidence") or {}), import_job_id=d.get("import_job_id"),
         field_reasons=dict(d.get("field_reasons") or {}),
+        **{k: d.get(k) for k in _CORRECTION_COLUMNS},
         source=None if src is None else SourceRef(
             file_path=src["file_path"], file_hash=src.get("file_hash", ""), page=src.get("page"), row=src.get("row"),
             raw_text=src.get("raw_text", ""), extraction_method=ExtractionMethod(src["extraction_method"]),
