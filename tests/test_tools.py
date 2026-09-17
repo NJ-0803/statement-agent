@@ -21,6 +21,7 @@ from statement_agent.agent.tools import (
 from statement_agent.ingest.pipeline import ingest_folder
 from statement_agent.schema import Direction, EconomicType, Transaction
 from statement_agent.store import Store
+from tests._dataset import dataset_ledger, dataset_ledger_and_documents
 
 DATASET = os.path.join(os.path.dirname(os.path.dirname(__file__)), "dataset_public")
 
@@ -44,28 +45,11 @@ def _make_txn(txn_date: date, *, amount: str = "100.00", merchant: str = "TEST M
 
 
 def _ledger():
-    fd, path = tempfile.mkstemp(suffix=".db")
-    os.close(fd)
-    os.remove(path)
-    store = Store(path)
-    ingest_folder(DATASET, store, attempt_vision=False)
-    ledger = store.all_transactions()
-    store.close()
-    os.remove(path)
-    return ledger
+    return dataset_ledger()
 
 
 def _ledger_and_documents():
-    fd, path = tempfile.mkstemp(suffix=".db")
-    os.close(fd)
-    os.remove(path)
-    store = Store(path)
-    ingest_folder(DATASET, store, attempt_vision=False)
-    ledger = store.all_transactions()
-    documents = store.all_documents_as_dicts()
-    store.close()
-    os.remove(path)
-    return ledger, documents
+    return dataset_ledger_and_documents()
 
 
 class TestListDocuments:

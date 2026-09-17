@@ -99,20 +99,26 @@ def test_groq_column_suggestions_send_no_values(db, tmp_path, monkeypatch):
     assert "TEA SHOP" not in content and "10.00" not in content and "Memo Line" in content
 
 
-def test_backup_restore_and_wipe_cli(db, tmp_path):
-    env = {**os.environ, "PYTHONPATH": os.path.dirname(os.path.dirname(os.path.abspath(__file__)))}
-    env.pop("GROQ_API_KEY", None)
-    # cwd is the temp dir, so `wipe` can only ever clear a temporary uploaded_documents/
-    run = lambda *a: subprocess.run([sys.executable, "-m", "statement_agent.cli", *a], capture_output=True,
-                                    text=True, cwd=tmp_path, env=env)
+def test_backup_restore_and_wipe_cli(db, tmp_path, monkeypatch):
+    from statement_agent import cli
+
+    monkeypatch.chdir(tmp_path)  # so `wipe` can only ever clear a temporary uploaded_documents/
+
+    def run(*a):
+        monkeypatch.setattr(sys, "argv", ["statement-agent", *a])
+        try:
+            cli.main()
+        except SystemExit as e:
+            return e.code or 0
+        return 0
     backup = str(tmp_path / "b.db")
-    assert run("backup", "--db", db, "--to", backup).returncode == 0
+    assert run("backup", "--db", db, "--to", backup) == 0
     assert sqlite3.connect(backup).execute("SELECT COUNT(*) FROM transactions").fetchone()[0] == 3
-    assert run("wipe", "--db", db).returncode != 0
-    assert run("wipe", "--db", db, "--yes").returncode == 0
+    assert run("wipe", "--db", db) != 0
+    assert run("wipe", "--db", db, "--yes") == 0
     assert Store(db).all_transactions() == []
-    assert run("restore", "--db", db, "--from", backup).returncode != 0  # exists: needs --force
+    assert run("restore", "--db", db, "--from", backup) != 0  # exists: needs --force
     (tmp_path / "junk.db").write_text("not a database")
-    assert run("restore", "--db", db, "--from", str(tmp_path / "junk.db"), "--force").returncode != 0
-    assert run("restore", "--db", db, "--from", backup, "--force").returncode == 0
+    assert run("restore", "--db", db, "--from", str(tmp_path / "junk.db"), "--force") != 0
+    assert run("restore", "--db", db, "--from", backup, "--force") == 0
     assert len(Store(db).all_transactions()) == 3

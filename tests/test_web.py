@@ -18,6 +18,7 @@ from statement_agent.agent.verifier import ClaimedAmount, FinalAnswer, ToolCallR
 from statement_agent.agent.loop import AgentRunResult
 from statement_agent.ingest.pipeline import ingest_folder
 from statement_agent.store import Store
+from tests._dataset import copy_ledger_db
 from statement_agent.web.app import create_app
 
 DATASET = os.path.join(os.path.dirname(os.path.dirname(__file__)), "dataset_public")
@@ -39,15 +40,8 @@ def empty_db_path():
 
 
 @pytest.fixture
-def populated_db_path():
-    fd, path = tempfile.mkstemp(suffix=".db")
-    os.close(fd)
-    os.remove(path)
-    store = Store(path)
-    ingest_folder(DATASET, store, attempt_vision=False)
-    store.close()
-    yield path
-    os.remove(path)
+def populated_db_path(tmp_path):
+    return copy_ledger_db(str(tmp_path / "ledger.db"))
 
 
 class TestIndexPage:

@@ -27,6 +27,7 @@ import os
 import sys
 import tempfile
 from dataclasses import dataclass
+from functools import lru_cache
 from datetime import date
 from decimal import Decimal
 from typing import Callable
@@ -54,7 +55,9 @@ class GoldCase:
     check: Callable[[list], tuple[bool, str]]  # returns (passed, detail)
 
 
+@lru_cache(maxsize=1)
 def _build_ledger():
+    """Built once per process: the same folder, imported repeatedly, was the slowest thing in the suite."""
     fd, path = tempfile.mkstemp(suffix=".db")
     os.close(fd)
     os.remove(path)
@@ -63,7 +66,7 @@ def _build_ledger():
     ledger = store.all_transactions()
     store.close()
     os.remove(path)
-    return ledger
+    return tuple(ledger)
 
 
 def _check(actual, expected, label: str) -> tuple[bool, str]:

@@ -21,7 +21,6 @@ import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field
 
-import pdfplumber
 
 from ..ingest.csv_parser import file_hash
 from ..normalize import DocumentDateResolver, normalize_amount
@@ -96,6 +95,8 @@ def _classify_doc_type(full_text: str) -> str:
 
 
 def parse_pdf_native(path: str) -> PdfParseResult:
+    import pdfplumber  # imported here: only the line-based reader needs it, and it costs ~60ms to load
+
     fhash = file_hash(path)
     document = Document(
         document_id=str(uuid.uuid4()),

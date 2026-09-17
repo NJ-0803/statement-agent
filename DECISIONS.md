@@ -1970,3 +1970,26 @@ machine, up from about 25 seconds earlier today; profiling was interrupted, so t
 a slower code path) isn't established.
 
 481 tests passing (6 new in `tests/test_wrapup_tools.py`).
+
+## 41. Making the test suite fast again (about 280s → 3.4s)
+
+The suite had crept from ~25s to 3–4 minutes. Profiling found no single regression — it was the sample
+folder being re-imported per test, plus PDFs being re-read several times inside each import.
+
+- **`sniff_file` is cached** on (path, size, modified time). One import reads the same file up to four
+  times (analyse → remap → review → commit), and each read re-parses every PDF page. This speeds up real
+  imports too: the sample folder went from 17 PDF reads to 4.
+- **`tests/_dataset.py`** imports `dataset_public/` once per test run into a template database; each test
+  gets a copy of that file and freshly loaded objects, so tests stay isolated. `test_tools`,
+  `test_verifier`, `test_web` and `eval/gold_qa` used to rebuild it per test (~0.3s each, dozens of
+  times). That alone took the suite from ~88s to ~16s.
+- **The 20k-row scale ledger** is built once for its class; each test just clears the duplicate flags.
+- **The backup/restore/wipe CLI test** runs `cli.main()` in-process instead of starting three Python
+  processes (~1.3s saved).
+- **pdfplumber loads lazily** (only the line-based PDF reader needs it), cutting ~60ms off every start.
+- **Tests run on 4 processes by default** (`pytest.ini`, `pytest-xdist`), with `--dist loadfile` so each
+  file's session fixtures are built once per worker. 4 beats 8 on this laptop; 8 workers thrash on 8GB.
+
+Result: **3.4s** for 481 tests, from about 280s at its worst and ~88s on an idle machine. The floor is
+roughly 1.2s — pytest's own startup plus importing Flask/PyMuPDF/openpyxl in each worker — so the asked-for
+2s isn't reachable while each worker pays that cost; the remaining ~2s is the tests themselves.

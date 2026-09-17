@@ -14,6 +14,7 @@ import csv
 import datetime as _dt
 import io
 import os
+from collections import OrderedDict
 from dataclasses import dataclass, field
 
 from .vocab import header_role_scores, looks_like_amount, looks_like_date
@@ -273,7 +274,35 @@ def sniff_grids(kind: str, grids) -> SniffResult:
     return SniffResult(kind=kind, candidates=candidates, sheets=sheet_info, evidence=evidence)
 
 
+_CACHE: "OrderedDict[tuple, SniffResult]" = OrderedDict()
+_CACHE_SIZE = 16
+
+
+def _cache_key(path: str):
+    st = os.stat(path)
+    return (os.path.realpath(path), st.st_size, st.st_mtime_ns)
+
+
 def sniff_file(path: str) -> SniffResult:
+    """Cached on (path, size, modified time): one import reads the same file several times (analyse, remap,
+    review, commit), and re-reading a PDF's pages each time is the single most expensive part of an import."""
+    try:
+        key = _cache_key(path)
+    except OSError:
+        return _sniff_file(path)
+    hit = _CACHE.get(key)
+    if hit is not None:
+        _CACHE.move_to_end(key)
+        return hit
+    result = _sniff_file(path)
+    _CACHE[key] = result
+    _CACHE.move_to_end(key)
+    while len(_CACHE) > _CACHE_SIZE:
+        _CACHE.popitem(last=False)
+    return result
+
+
+def _sniff_file(path: str) -> SniffResult:
     ext = os.path.splitext(path)[1].lower()
     if ext == ".xlsx":
         return sniff_xlsx(path)

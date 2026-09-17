@@ -5,20 +5,13 @@ from statement_agent.agent.tools import aggregate_spending, search_transactions
 from statement_agent.agent.verifier import ClaimedAmount, FinalAnswer, ToolCallRecord, verify
 from statement_agent.ingest.pipeline import ingest_folder
 from statement_agent.store import Store
+from tests._dataset import dataset_ledger
 
 DATASET = os.path.join(os.path.dirname(os.path.dirname(__file__)), "dataset_public")
 
 
 def _ledger():
-    fd, path = tempfile.mkstemp(suffix=".db")
-    os.close(fd)
-    os.remove(path)
-    store = Store(path)
-    ingest_folder(DATASET, store, attempt_vision=False)
-    ledger = store.all_transactions()
-    store.close()
-    os.remove(path)
-    return ledger
+    return dataset_ledger()
 
 
 class TestGroundedAnswerPasses:

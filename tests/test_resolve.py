@@ -1,6 +1,8 @@
 import os
 from decimal import Decimal
 
+import pytest
+
 from statement_agent.ingest.pdf_native import parse_pdf_native
 from statement_agent.resolve import (
     assign_categories,
@@ -220,6 +222,19 @@ class TestCrossDocumentDuplicateDetectionAtScale:
     AND actually fast, not just correct in theory.
     """
 
+    @pytest.fixture(scope="class")
+    def _built(self):
+        """Built once for this class: 20k rows take a moment to create, and each test only needs the
+        duplicate flags cleared again, not a whole new ledger."""
+        return self._synthetic_ledger(20_000, planted_duplicate_pairs=25)
+
+    @pytest.fixture
+    def scale_ledger(self, _built):
+        ledger, planted_ids = _built
+        for t in ledger:
+            t.duplicate_of = t.duplicate_reason = None
+        return ledger, planted_ids
+
     @staticmethod
     def _synthetic_ledger(n_unique: int, *, planted_duplicate_pairs: int):
         import uuid
@@ -262,8 +277,8 @@ class TestCrossDocumentDuplicateDetectionAtScale:
 
         return ledger, planted_ids
 
-    def test_correctness_at_20k_transactions_with_planted_duplicates(self):
-        ledger, planted_ids = self._synthetic_ledger(20_000, planted_duplicate_pairs=25)
+    def test_correctness_at_20k_transactions_with_planted_duplicates(self, scale_ledger):
+        ledger, planted_ids = scale_ledger
         newly_flagged = detect_cross_document_duplicates(ledger)
 
         flagged_ids = {t.transaction_id for t in newly_flagged}
@@ -274,10 +289,10 @@ class TestCrossDocumentDuplicateDetectionAtScale:
         for original_id, dup_id in planted_ids:
             assert by_id[dup_id].duplicate_of == original_id
 
-    def test_completes_quickly_at_20k_transactions_not_quadratic(self):
+    def test_completes_quickly_at_20k_transactions_not_quadratic(self, scale_ledger):
         import time
 
-        ledger, _ = self._synthetic_ledger(20_000, planted_duplicate_pairs=25)
+        ledger, _ = scale_ledger
         start = time.monotonic()
         detect_cross_document_duplicates(ledger)
         elapsed = time.monotonic() - start
@@ -287,11 +302,11 @@ class TestCrossDocumentDuplicateDetectionAtScale:
         # regressing back to quadratic behavior
         assert elapsed < 5.0, f"took {elapsed:.2f}s — likely regressed to O(n^2)"
 
-    def test_no_false_positives_among_the_many_same_merchant_transactions(self):
+    def test_no_false_positives_among_the_many_same_merchant_transactions(self, scale_ledger):
         # 50 merchants across 20,000 transactions means ~400 transactions per
         # merchant sharing the same rotating amount pool — exactly the case that
         # stresses whether grouping produces spurious matches
-        ledger, planted_ids = self._synthetic_ledger(20_000, planted_duplicate_pairs=25)
+        ledger, planted_ids = scale_ledger
         newly_flagged = detect_cross_document_duplicates(ledger)
         planted_dup_ids = {dup_id for _, dup_id in planted_ids}
         # every flag must be either a planted duplicate, or a genuine coincidental
