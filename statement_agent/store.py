@@ -141,6 +141,16 @@ CREATE TABLE IF NOT EXISTS link_decisions (
     decided_at TEXT NOT NULL
 );
 
+-- what the app has learned per merchant (categories.merchant_key): from a label in one of your files,
+-- from a category you set yourself, or from Groq — so the same merchant is never looked up twice
+CREATE TABLE IF NOT EXISTS merchant_knowledge (
+    merchant_key TEXT PRIMARY KEY,
+    category TEXT NOT NULL,
+    source TEXT NOT NULL,  -- you | file | groq
+    detail TEXT,  -- e.g. the Groq model that answered
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS mapping_profiles (
     fingerprint TEXT PRIMARY KEY,
     mapping_json TEXT NOT NULL,
@@ -353,6 +363,33 @@ class Store:
         row = self.conn.execute("SELECT * FROM correction_rules WHERE pattern = ?", (pattern,)).fetchone()
         return CorrectionRule(**dict(row)) if row else None
 
+    _KNOWLEDGE_RANK = {"groq": 0, "file": 1, "you": 2}
+
+    def merchant_knowledge(self) -> dict[str, tuple[str, str]]:
+        return {r["merchant_key"]: (r["category"], r["source"])
+                for r in self.conn.execute("SELECT merchant_key, category, source FROM merchant_knowledge")}
+
+    def learn(self, entries: list[tuple[str, str, str, str | None]]) -> None:
+        """(merchant_key, category, source, detail). A more trusted source replaces a less trusted one, never
+        the other way round: you > file > groq. Caller commits (or holds the transaction)."""
+        current = self.merchant_knowledge()
+        for key, category, source, detail in entries:
+            if not key or not category:
+                continue
+            have = current.get(key)
+            if have and self._KNOWLEDGE_RANK[have[1]] > self._KNOWLEDGE_RANK[source]:
+                continue
+            self.conn.execute(
+                "INSERT INTO merchant_knowledge (merchant_key, category, source, detail, updated_at) VALUES (?,?,?,?,?) "
+                "ON CONFLICT(merchant_key) DO UPDATE SET category=excluded.category, source=excluded.source, "
+                "detail=excluded.detail, updated_at=excluded.updated_at",
+                (key, category, source, detail, _now()),
+            )
+            current[key] = (category, source)
+
+    def forget(self, key: str, source: str) -> None:
+        self.conn.execute("DELETE FROM merchant_knowledge WHERE merchant_key = ? AND source = ?", (key, source))
+
     def _save_rule(self, rule: CorrectionRule) -> None:
         rule.updated_at = _now()
         rule.created_at = rule.created_at or rule.updated_at
@@ -393,7 +430,7 @@ class Store:
         rules = self.list_rules()
         txns = self.all_transactions()
         before = {t.transaction_id: _correction_state(t) for t in txns}
-        compute(txns, rules)
+        compute(txns, rules, self.merchant_knowledge())
         changed = [t for t in txns if _correction_state(t) != before[t.transaction_id]]
         self._write_correction_fields(changed)
         return len(changed)
@@ -599,6 +636,7 @@ class Store:
                     t.import_job_id = job.job_id
                 self._write_document(document, import_job_id=job.job_id)
                 self._write_transactions(transactions)
+                self._learn_from_file_labels(transactions)
                 ledger = [_row_to_transaction(r) for r in self.conn.execute("SELECT * FROM transactions").fetchall()]
                 flagged = detect_cross_document_duplicates(ledger)
                 if flagged:
@@ -619,6 +657,14 @@ class Store:
                 t.import_job_id = None
             raise
         return flagged
+
+    def _learn_from_file_labels(self, transactions: list[Transaction]) -> None:
+        from .categories import canonical, merchant_key
+
+        self.learn([
+            (merchant_key(t.merchant_raw or t.description_raw), canonical(t.category_declared), "file", None)
+            for t in transactions if t.category_declared and t.direction == Direction.DEBIT
+        ])
 
     def rollback_import(self, job: ImportJob) -> int:
         """Remove exactly this import's document and rows. Duplicate flags that OTHER imports'

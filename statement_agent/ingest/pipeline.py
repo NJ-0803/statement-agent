@@ -37,6 +37,7 @@ from ..store import (
     DuplicateDocument, Store, document_from_dict, document_to_dict, transaction_from_dict, transaction_to_dict,
 )
 from .confidence import explain, gate_issues, low_confidence_fields, set_field
+from ..categories import merchant_key
 from .columns import mask_card_number
 from .formats import EXTRA_TABULAR_EXTENSIONS, SHEET_EXTENSIONS
 from .csv_parser import CsvParseResult, file_hash, parse_sniffed
@@ -518,7 +519,10 @@ def _evaluate(store: Store, job: ImportJob, staging: dict):
                   "ignored": len(ignored), "issues": 0}
 
     rules = store.list_rules()
-    anomalies = resolve_all(document, transactions, rules) if transactions else []
+    knowledge = store.merchant_knowledge()
+    if transactions:
+        _ask_groq_about_new_merchants(store, transactions, rules, knowledge, staging)
+    anomalies = resolve_all(document, transactions, rules, knowledge) if transactions else []
     for flag in anomalies:
         t = flag.transaction
         t.notes = f"{t.notes} | FLAGGED: {flag.reason}".strip(" |")
@@ -570,6 +574,36 @@ def _evaluate(store: Store, job: ImportJob, staging: dict):
     staging["anomaly_count"] = len(anomalies)
     store.save_job(job, staging)
     return document, transactions, mapping
+
+
+def _ask_groq_about_new_merchants(store, transactions, rules, knowledge, staging) -> None:
+    """Before resolving, asks Groq (if a key is set) about purchase merchants nothing else can place; answers
+    are remembered, so each merchant is asked about once. Groq being unavailable never blocks an import."""
+    from ..groq_categorize import groq_enabled, suggest_categories
+    from ..resolve import assign_categories, refine_all_economic_types
+
+    if not groq_enabled():
+        return
+    probe = [transaction_from_dict(transaction_to_dict(t)) for t in transactions]
+    refine_all_economic_types(probe)
+    assign_categories(probe, rules, knowledge)
+    unknown = sorted({merchant_key(t.merchant_raw or t.description_raw) for t in probe
+                      if t.economic_type.value == "PURCHASE" and t.category is None} - {""})
+    if not unknown:
+        return
+    answers, note = suggest_categories(unknown, store_categories(store))
+    if answers:
+        store.learn([(k, c, "groq", model) for k, (c, model) in answers.items()])
+        store.conn.commit()
+        knowledge.update({k: (c, "groq") for k, (c, _) in answers.items()})
+    if note:
+        staging.setdefault("warnings", []).append(note)
+
+
+def store_categories(store) -> list[str]:
+    from ..ledger_edits import category_choices
+
+    return category_choices(store)
 
 
 def _row_key(t) -> str:

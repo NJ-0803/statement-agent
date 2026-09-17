@@ -94,6 +94,8 @@ def describe_source(t: Transaction, rules_by_id: dict[str, CorrectionRule]) -> d
     category = {
         "keywords": "worked out from the merchant name",
         "file": "the category in your file",
+        "learned": "remembered from your earlier files or changes",
+        "groq": "suggested by Groq — change it if it's wrong",
         "rule": rule_text(t.category_rule_id),
         "you": "you set this",
     }.get(t.category_source or "", "no category found")

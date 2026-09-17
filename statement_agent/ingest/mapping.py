@@ -54,6 +54,7 @@ class ColumnMapping:
     # written as a positive number) or money OUT (bank exports)? Explicit CR/DR endings always win.
     negative_means: str = "CREDIT"
     negative_means_source: str = "default"  # "default" | "evidence" | "format" | "user" | "assumed"
+    period_date: str | None = None  # ISO date for every row, when a sheet has no date column but states its month
     confidence: dict[str, float] = field(default_factory=dict)
     evidence: dict[str, list[str]] = field(default_factory=dict)
     ambiguities: list[str] = field(default_factory=list)
@@ -218,6 +219,13 @@ def infer_mapping(table: TableCandidate, *, profile: dict | None = None) -> Colu
 
     ambiguities: list[str] = []
 
+    # "Category" + "Subcategory": the more specific one is the category; the other stays as extra information
+    sub = next((j for j, h in enumerate(table.headers) if normalize_header(h)[0] in ("subcategory", "sub category")), None)
+    if sub is not None and roles.get("category") != sub and sub not in roles.values():
+        roles["category"] = sub
+        confidence["category"] = 1.0
+        evidence["category"] = [f"'{table.headers[sub]}' is the most specific category column"]
+
     if "date" not in roles and "value_date" in roles:
         roles["date"] = roles.pop("value_date")
         confidence["date"] = confidence.pop("value_date")
@@ -273,10 +281,19 @@ def infer_mapping(table: TableCandidate, *, profile: dict | None = None) -> Colu
             if 0 < h < 0.8:
                 ambiguities.append(f"I think '{table.headers[roles[role]]}' is the {_role_word(role)} column — please confirm.")
 
+    if "date" in missing_required and roles.get("date") is None:
+        period = _stated_month(table)
+        if period is not None:
+            missing_required.remove("date")
+            ambiguities[:] = [a for a in ambiguities if "date" not in a]
+            evidence.setdefault("_file", []).append(
+                f"No date column; the sheet says it covers {period:%B %Y}, so every row is dated {period:%d %b %Y}")
+
     if table.header_row is None and ("date" in roles or amount_model):
         ambiguities.append("This file has no header row, so I guessed the columns from their values — please check them.")
 
     mapping = ColumnMapping(
+        period_date=(p.isoformat() if "date" not in roles and (p := _stated_month(table)) else None),
         roles=roles, headers=list(table.headers), amount_model=amount_model, confidence=confidence,
         evidence=evidence, ambiguities=ambiguities, missing_required=missing_required,
         fingerprint=fingerprint, sheet=table.sheet, header_row=table.header_row, excel_serial_dates=excel_serial,
@@ -393,6 +410,27 @@ def _settle_sign_convention(mapping: ColumnMapping, table: TableCandidate) -> No
         notes.append("Most amounts are positive spending, so a minus sign means money in (a refund)")
     else:
         mapping.negative_means_source = "assumed"
+
+
+_MONTHS = {m: i for i, m in enumerate(
+    ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october",
+     "november", "december"], 1)}
+_STATED_MONTH_RE = re.compile(
+    r"(?:month|period|statement|budget|for)\b[^\n]{0,30}?\b([A-Za-z]{3,9})\.?,?\s+(\d{4})", re.IGNORECASE)
+
+
+def _stated_month(table: TableCandidate):
+    """'For the Month of: December 2025' (or 'Budget for Dec 2025') above the table -> 1 Dec 2025."""
+    from datetime import date as _date
+
+    for _, cells in table.preamble:
+        text = " ".join(c for c in cells if c)
+        for m in _STATED_MONTH_RE.finditer(text):
+            name = m.group(1).lower()
+            month = next((i for full, i in _MONTHS.items() if full.startswith(name) and len(name) >= 3), None)
+            if month:
+                return _date(int(m.group(2)), month, 1)
+    return None
 
 
 def set_format_sign_convention(mapping: ColumnMapping, fmt: str) -> None:

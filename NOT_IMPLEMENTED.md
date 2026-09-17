@@ -101,6 +101,10 @@ mapping from.
 
 ## D. Categorization sophistication
 
+> **Update (Sept 2026, `DECISIONS.md` §39):** an optional Groq tier now exists for merchants nothing else
+> recognises (applied and marked, never re-asked), alongside file labels, merchant memory and much wider
+> word lists. The accuracy concern below still applies: Groq's answers are unevaluated guesses.
+
 **No LLM-assisted fallback for unrecognized merchants.** `resolve.categorize()` is a binary
 keyword-match cascade: a merchant either matches a known keyword list or gets `category: None`
 (`UNKNOWN`), with no soft-confidence middle ground. This is deliberately conservative — the brief

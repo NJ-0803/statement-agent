@@ -118,6 +118,7 @@
     try {
       const s = await api('GET', '/api/status');
       ledgerReady = s.ready; hasKey = s.has_api_key;
+      $('#groq-box').hidden = !(s.groq && s.ready);
       let text = s.ready
         ? `You have ${plural(s.transaction_count, 'transaction')} from ${plural(s.document_count, 'statement')}.`
         : s.reason;
@@ -891,6 +892,20 @@
       );
     }));
   }
+
+  $('#groq-run').addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    $('#groq-note').textContent = 'Asking Groq…';
+    try {
+      const r = await api('POST', '/api/categorize/groq');
+      const msg = r.asked ? `Groq answered for ${plural(r.answered, 'merchant')} of ${r.asked}; ${plural(r.changed, 'transaction')} updated.` : r.note;
+      $('#groq-note').textContent = r.note && r.asked ? `${msg} ${r.note}` : msg;
+      announce(msg);
+      loadTransactions();
+    } catch (err) { $('#groq-note').textContent = err.message; }
+    btn.disabled = false;
+  });
 
   $('#txn-filter').addEventListener('submit', (e) => { e.preventDefault(); loadTransactions(); });
   $('#txn-more').addEventListener('click', () => loadTransactions({ append: true }));

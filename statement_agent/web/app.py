@@ -187,13 +187,15 @@ def create_app(db_path: str = "ledger.db", *, upload_dir: str = UPLOAD_DIR, run_
     @app.route("/api/status")
     def status():
         path = app.config["DB_PATH"]
+        from ..groq_categorize import groq_enabled
+
         has_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
         if not os.path.exists(path):
             return jsonify({
                 "ready": False,
                 "reason": "No statements added yet — add one below, or run "
                           "`python -m statement_agent.cli ingest` from the command line.",
-                "transaction_count": 0, "document_count": 0, "has_api_key": has_key,
+                "transaction_count": 0, "document_count": 0, "has_api_key": has_key, "groq": groq_enabled(),
             })
         store = _store()
         ledger = store.all_transactions()
@@ -203,6 +205,7 @@ def create_app(db_path: str = "ledger.db", *, upload_dir: str = UPLOAD_DIR, run_
             "ready": bool(ledger),
             "reason": None if ledger else "No transactions yet — add a statement below.",
             "transaction_count": len(ledger), "document_count": len(documents), "has_api_key": has_key,
+            "groq": groq_enabled(),
         })
 
     # -- imports -----------------------------------------------------------------------
@@ -558,6 +561,10 @@ def create_app(db_path: str = "ledger.db", *, upload_dir: str = UPLOAD_DIR, run_
                 body["rule"] = _rule_view(result["rule"], store.all_transactions())
             return jsonify(body)
         return _with_store(run)
+
+    @app.route("/api/categorize/groq", methods=["POST"])
+    def post_groq_categorize():
+        return _with_store(lambda store: jsonify(ledger_edits.categorize_with_groq(store)))
 
     @app.route("/api/rules", methods=["GET"])
     def list_rules():

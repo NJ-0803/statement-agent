@@ -11,7 +11,8 @@ from .corrections import (
     MAX_CATEGORY_LENGTH, MAX_MERCHANT_LENGTH, CorrectionError, assign_merchant_names, clean_label, clean_pattern,
     rule_matches, suggested_pattern,
 )
-from .resolve import _CATEGORY_KEYWORDS, assign_categories, assign_economic_types
+from .categories import BUILT_IN, merchant_key
+from .resolve import assign_categories, assign_economic_types
 from .schema import (
     CorrectionRule, EconomicEvent, EconomicType, EventKind, EventMember, EventStatus, Transaction,
 )
@@ -20,14 +21,14 @@ from .store import Store
 UNSET = object()  # "leave this field alone", as opposed to None ("go back to the automatic value")
 
 
-def recompute(transactions: list[Transaction], rules: list[CorrectionRule]) -> None:
+def recompute(transactions: list[Transaction], rules: list[CorrectionRule], knowledge: dict | None = None) -> None:
     assign_merchant_names(transactions, rules)
     assign_economic_types(transactions, rules)
-    assign_categories(transactions, rules)
+    assign_categories(transactions, rules, knowledge)
 
 
 def category_choices(store: Store) -> list[str]:
-    built_in = [name for name, _ in _CATEGORY_KEYWORDS] + ["Other"]
+    built_in = list(BUILT_IN)
     used = {t.category for t in store.all_transactions() if t.category}
     used |= {r.category for r in store.list_rules() if r.category}
     return built_in + sorted(used - set(built_in))
@@ -89,9 +90,15 @@ def correct_one(store: Store, transaction_id: str, *, category=UNSET, merchant_n
             t.economic_type_confidence = 1.0
     if category is not UNSET:
         category = clean_label(category, limit=MAX_CATEGORY_LENGTH, what="category")
+        key = merchant_key(t.merchant_raw or t.description_raw)
         if category is None:
-            t.category_source = None if t.category_source == "you" else t.category_source
+            if t.category_source == "you":
+                t.category_source = None
+                store.forget(key, "you")
         else:
+            if t.category_source in ("groq", "learned"):
+                # correcting a guess: other guessed rows from this merchant follow, and future imports too
+                store.learn([(key, category, "you", None)])
             t.category, t.category_confidence, t.category_source, t.category_rule_id = category, 1.0, "you", None
     if merchant_name is not UNSET:
         merchant_name = clean_label(merchant_name, limit=MAX_MERCHANT_LENGTH, what="merchant name")
@@ -221,3 +228,24 @@ def link_manually(store: Store, kind: str, out_id: str, in_id: str) -> dict:
     )
     store.add_manual_link(event)
     return {"event": store.get_event(event.event_id)}
+
+
+def categorize_with_groq(store: Store) -> dict:
+    """Asks Groq about every uncategorized purchase merchant already in the ledger, remembers the answers,
+    and re-applies categories. Returns how many merchants were answered and rows changed."""
+    from .groq_categorize import groq_enabled, suggest_categories
+
+    if not groq_enabled():
+        raise CorrectionError("Groq isn't set up. Add GROQ_API_KEY to the .env file and restart the app.")
+    knowledge = store.merchant_knowledge()
+    unknown = sorted({
+        merchant_key(t.merchant_raw or t.description_raw) for t in store.all_transactions()
+        if t.economic_type == EconomicType.PURCHASE and t.category is None and t.category_source != "you"
+    } - {""} - set(knowledge))
+    if not unknown:
+        return {"asked": 0, "answered": 0, "changed": 0, "note": "Every purchase already has a category."}
+    answers, note = suggest_categories(unknown, category_choices(store))
+    store.learn([(k, c, "groq", model) for k, (c, model) in answers.items()])
+    changed = store.apply_correction(None, action="groq_categorize", compute=recompute,
+                                     detail={"asked": len(unknown), "answered": len(answers)})
+    return {"asked": len(unknown), "answered": len(answers), "changed": changed, "note": note}

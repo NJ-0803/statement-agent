@@ -1867,3 +1867,71 @@ header). All fixtures are synthetic PDFs drawn in the tests; the browser extensi
 password screen was tested through the API only.
 
 459 tests passing (10 new in `tests/test_pdf_columns.py`).
+
+## 39. Categories that grow with every file: file labels, merchant memory, and optional Groq
+
+The request: every new statement can bring new categories, and the app should digest them without paid
+services and without a model running on the Mac. Tested on two sample sheets the user shared, it did
+badly:
+- A tracking sheet's "Expense Type" column wasn't recognised, so 12 of its 20 labelled rows had no
+  category, and "Gym membership" was overruled to Personal Care.
+- "Amazon Pay balance", "Anthropic subscription" and "eBay" matched nothing.
+- A monthly income/expense statement couldn't be imported at all: it has no date column, and its
+  money-in/out split is only in the section titles.
+
+**What changed:**
+- **Open categories (`categories.py`).** A file's own label is now the category: mapped onto a built-in
+  name when it's simply another name for one ("Dining Out" → Dining, "Bills & Utilities" → Utilities,
+  "Rent" → Housing), otherwise kept as a new category ("Pet Care"). "Food" stays "Food", because it could
+  mean groceries or dining.
+  - The built-in list grew: Fitness, Education, Housing, Insurance, Gifts & Donations, Home Maintenance,
+    Other.
+  - "Expense Type", "Spend Category", "Subcategory" and similar are category headers. When both Category
+    and Subcategory exist, the more specific one is used and the other is kept as extra information.
+- **Precedence reversed from §32** (tests updated): you > your rule > **the file's label** > remembered
+  merchant > keywords > Groq. §32 put our keywords above the file's label; a label in the person's own
+  file is their classification of that row, so it now wins.
+- **Merchant memory (`merchant_knowledge`).**
+  - Labels in committed files teach "this merchant → this category", so a later file without a category
+    column uses them (source "learned").
+  - A category you set on a row whose category was a *guess* (Groq or remembered) also teaches, and
+    other guessed rows from that merchant follow. Correcting a keyword- or file-based row still changes
+    only that row, so "Only this transaction" keeps its meaning.
+  - A more trusted source never gets overwritten by a less trusted one: you > file > Groq.
+- **Whole-word keywords**, about 200 brands and words (Anthropic, OpenAI, eBay, Amazon, Blinkit,
+  subscription, haircut, doctor, rent, premium, plumbing, …), matched after the older substring list.
+- **Wallet top-ups** (Amazon Pay, Paytm, PhonePe, PayPal … balance / top-up / add money) are
+  `TRANSFER`: the money is spent later from the wallet, so counting the top-up would double-count.
+- **Budget-style sheets.**
+  - With no date column, a stated month above the table ("For the Month of: December 2025") dates every
+    row the 1st of that month, reason `date_from_period` (0.7), with a check that says so.
+  - A title line alone ("Income", "Expenses") sets money in/out for the rows under it; income-section
+    rows are `INCOME`.
+  - Totals, blank lines, section titles and repeated headers are ignored with reasons.
+
+**Groq (`groq_categorize.py`) — optional, free tier, applied and shown.** The user chose Groq over a local
+model or learner, with answers applied immediately and marked "suggested by Groq".
+- **When it runs:** only if `GROQ_API_KEY` is set (`.env` is now loaded by the CLI entry point only, never
+  by `create_app`, so tests can't pick up a real key), and only for purchase merchants nothing above
+  could place.
+- **What's sent:** only `merchant_key`s — the description's words with numbers, references and
+  payment-rail codes already removed; never amounts, dates, account or card numbers. The test asserts
+  the request has no digits.
+- **Request:** temperature 0, JSON-only replies, 40 merchants per request, at most 200 per import.
+- **Validation:** answers must name a merchant that was asked about, with a short, plain category;
+  anything else is discarded.
+- **Model:** set by `GROQ_MODEL`. If it has been retired, the first available Llama / GPT-OSS / Qwen chat
+  model is used.
+- **Failures:** a 429, a network failure or a malformed batch never blocks an import; the merchant stays
+  uncategorized, with a note.
+- **Caching:** answers are stored, so each merchant is asked about once.
+- **Existing ledger:** "Ask Groq about uncategorized purchases" on the Transactions tab (and
+  `POST /api/categorize/groq`) does the same for data already added.
+
+**Not done / to know:** Groq's free-tier limits and data-retention terms are Groq's, and can change.
+Groq's answers are a model's guesses, visible and correctable, but they will sometimes be wrong. The
+budget sheet's own "Monthly Total" column is kept as extra information, not reconciled against Amount;
+in the user's screenshot the two columns don't agree row by row. No real Groq call was made in
+development (no key in this environment); the integration is tested against a faked API.
+
+474 tests passing (14 new in `tests/test_learning_categories.py`).

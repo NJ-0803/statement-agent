@@ -218,6 +218,9 @@ def _cmd_clients(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
+    from .env import load_dotenv
+
+    load_dotenv()
     parser = argparse.ArgumentParser(prog="statement-agent")
     sub = parser.add_subparsers(dest="command", required=True)
 

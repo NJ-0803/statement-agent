@@ -33,8 +33,7 @@ AGENT_MODEL = "claude-sonnet-5"
 MAX_ATTEMPTS = 3
 MAX_TOOL_ITERATIONS = 12
 
-_CATEGORY_ENUM = ["Dining", "Groceries", "Transport", "Travel", "Entertainment", "Subscriptions",
-                   "Utilities", "Shopping", "Healthcare", "Personal Care"]
+from ..categories import BUILT_IN as _CATEGORY_ENUM
 _ECONOMIC_TYPE_ENUM = ["PURCHASE", "INCOME", "REFUND", "TRANSFER", "CREDIT_CARD_PAYMENT", "CASH_WITHDRAWAL",
                         "REIMBURSEMENT", "FEE", "INTEREST", "REVERSAL", "INVESTMENT_TRANSFER", "CASHBACK", "UNKNOWN"]
 

@@ -86,16 +86,16 @@ class TestMatching:
 
 
 class TestPrecedence:
-    def test_you_beat_rule_beats_keywords_beats_file(self):
+    def test_you_beat_rule_beats_file_beats_keywords(self):
         mine = _txn("SWIGGY 1", category="Treats", category_source="you", tid="a")
         ruled = _txn("SWIGGY 2", tid="b")
         keyword = _txn("ZOMATO 3", tid="c")
-        declared = _txn("HARDWARE PLACE", category_declared="Home", tid="d")
+        declared = _txn("ZOMATO HARDWARE", category_declared="Tools", tid="d")
         assign_categories([mine, ruled, keyword, declared], [_rule("SWIGGY", "Takeaway")])
         assert (mine.category, mine.category_source) == ("Treats", "you")
         assert (ruled.category, ruled.category_source, ruled.category_rule_id) == ("Takeaway", "rule", "SWIGGY")
         assert (keyword.category, keyword.category_source) == ("Dining", "keywords")
-        assert (declared.category, declared.category_source) == ("Home", "file")
+        assert (declared.category, declared.category_source) == ("Tools", "file")  # beats the ZOMATO keyword
 
     def test_rules_never_give_a_non_purchase_a_category(self):
         t = _txn("SWIGGY REFUND", economic_type=EconomicType.REFUND)

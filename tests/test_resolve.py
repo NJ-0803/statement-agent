@@ -48,17 +48,22 @@ class TestAssignCategoriesDeclaredFallback:
     declared its own category per row — assign_categories should use that instead of
     leaving 70% of the ledger uncategorized."""
 
-    def test_keyword_match_wins_when_it_matches_even_if_declared_disagrees(self):
+    def test_the_files_own_label_wins_over_keywords(self):
+        # §39 reversed §32's order: a label in the person's own file is their classification of that row
+        txns = [_purchase_txn("SWIGGY BANGALORE", category_declared="Groceries")]
+        assign_categories(txns)
+        assert (txns[0].category, txns[0].category_source, txns[0].category_confidence) == ("Groceries", "file", 0.9)
+
+    def test_a_label_that_is_another_name_for_a_built_in_category_is_mapped(self):
         txns = [_purchase_txn("SWIGGY BANGALORE", category_declared="Food Delivery")]
         assign_categories(txns)
-        assert txns[0].category == "Dining"  # our own taxonomy, not the file's label
-        assert txns[0].category_confidence == 0.9
+        assert txns[0].category == "Dining"
 
     def test_declared_category_used_when_keyword_match_fails(self):
-        txns = [_purchase_txn("Hardware Store", category_declared="Home Improvement")]
+        txns = [_purchase_txn("Hardware Store", category_declared="Pet Supplies")]
         assign_categories(txns)
-        assert txns[0].category == "Home Improvement"
-        assert txns[0].category_confidence == 0.5  # lower confidence — file's own taxonomy, not verified
+        assert txns[0].category == "Pet Supplies"  # a new label becomes a category of its own
+        assert txns[0].category_confidence == 0.9
 
     def test_no_declared_category_and_no_keyword_match_stays_uncategorized(self):
         txns = [_purchase_txn("RAJ ENTERPRISES XYZ 9284", category_declared=None)]

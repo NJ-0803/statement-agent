@@ -263,6 +263,10 @@
         <p class="muted">These rows look related, but I'm not sure. They aren't used in any totals until you say yes.</p>
         <ul class="imports" id="links-list"></ul>
       </section>
+      <div id="groq-box" class="actions" hidden style="margin-top:.5rem">
+        <button type="button" class="btn" id="groq-run">Ask Groq about uncategorized purchases</button>
+        <span class="muted" id="groq-note">Only merchant names are sent — never amounts, dates or account numbers.</span>
+      </div>
       <p id="txn-count" class="muted" role="status"></p>
       <ul class="imports" id="txn-list"></ul>
       <div class="actions"><button type="button" class="btn quiet" id="txn-more" hidden>Show more</button></div>

@@ -66,6 +66,22 @@ class TabularResult:
     extra_columns: list = field(default_factory=list)  # columns.ExtraColumn for every non-core column
 
 
+_INCOME_SECTION_RE = re.compile(r"^(?:total\s+)?(?:income|incomes|earnings|revenue|money\s+in|receipts|credits|inflows?)$", re.IGNORECASE)
+_EXPENSE_SECTION_RE = re.compile(r"^(?:expenses?|expenditures?|spending|outgoings|money\s+out|payments|debits|outflows?)$", re.IGNORECASE)
+
+
+def _section_of(cells: list[str]) -> str | None:
+    filled = [c.strip() for c in cells if c and c.strip()]
+    if len(filled) != 1:
+        return None
+    text = filled[0].rstrip(":")
+    if _INCOME_SECTION_RE.match(text) and not text.lower().startswith("total"):
+        return "CREDIT"
+    if _EXPENSE_SECTION_RE.match(text):
+        return "DEBIT"
+    return None
+
+
 def parse_money(raw: str, *, decimal_separator: str, default_currency: str):
     if not looks_like_amount(raw):
         return None
@@ -127,10 +143,14 @@ def normalize_table(
     last_txn_candidate: RawTransactionCandidate | None = None
     stated_opening = stated_closing = None
     stated = StatedFigures()
+    section = None  # "CREDIT" | "DEBIT" once an "Income" / "Expenses" title line has been seen
+    period_date = date.fromisoformat(mapping.period_date) if mapping.period_date and "date" not in roles else None
+    period_issue = False
 
     for _, cells in table.preamble:
         joined = " ".join(c for c in cells if c)
         read_figures([joined], into=stated)
+        section = _section_of(cells) or section
         for regex in (OPENING_BALANCE_RE, CLOSING_BALANCE_RE):
             if regex.search(joined):
                 # the figure may sit in its own cell or share one with the label ("Opening Balance: 6,000.00")
@@ -167,6 +187,11 @@ def normalize_table(
         raw_date = get(cells, "date")
         money_raw = {r: get(cells, r) for r in ("amount", "debit", "credit")}
         has_money = any(v.lower() not in _ZERO_LIKE for v in money_raw.values())
+        row_section = _section_of(cells)
+        if row_section and not has_money:
+            section = row_section
+            cand.reason = f"section title ({'money in' if row_section == 'CREDIT' else 'money out'} rows follow)"
+            continue
         def any_cell(regex):  # per cell: a summary label usually sits after the date, not at the row's start
             return any(regex.search(c) for c in cells if c)
 
@@ -201,6 +226,8 @@ def normalize_table(
 
         row_issues: list[ValidationIssue] = []
         evidence = ", ".join(f"{k}: {v}" for k, v in cell_map.items())
+        if period_date is not None and not raw_date:
+            raw_date = period_date.isoformat()
 
         def fail(rule, message, action, reason, field_name=None):
             row_issues.append(_issue(rule, IssueSeverity.BLOCKING, message, action, target=key, field_name=field_name, evidence=evidence))
@@ -208,7 +235,9 @@ def normalize_table(
 
         parsed_date = None
         date_reason = "date_unambiguous"
-        if not raw_date:
+        if period_date is not None and raw_date == period_date.isoformat() and not get(cells, "date"):
+            parsed_date, date_reason, period_issue = period_date, "date_from_period", True
+        elif not raw_date:
             fail("missing_date", f"Row {row_no} has an amount but no date.", "Leave this row out, or fix the file and add it again.", "missing date", "date")
         elif mapping.excel_serial_dates and re.fullmatch(r"\d{5}(?:\.0+)?", raw_date):
             parsed_date = date(1899, 12, 30) + timedelta(days=int(float(raw_date)))
@@ -255,7 +284,9 @@ def normalize_table(
                 else:
                     direction = parsed_amount.direction
                     signed_amount[key] = bool(_EXPLICIT_SIGN_RE.search(raw_amount))
-                    if not _CR_DR_SUFFIX_RE.search(raw_amount):
+                    if section and not signed_amount[key] and not _CR_DR_SUFFIX_RE.search(raw_amount):
+                        direction, direction_reason = Direction(section), "direction_from_section"
+                    elif not _CR_DR_SUFFIX_RE.search(raw_amount):
                         # normalize_amount reads a bare minus as money in; the file's own convention decides
                         negative = direction == Direction.CREDIT
                         money_in_when_negative = mapping.negative_means == "CREDIT"
@@ -331,7 +362,8 @@ def normalize_table(
             currency=row_currency,
             amount_raw=money_raw["amount"] or money_raw["debit"] or money_raw["credit"],
             direction=direction or Direction.DEBIT,
-            economic_type=EconomicType.PURCHASE if (direction or Direction.DEBIT) == Direction.DEBIT else EconomicType.REFUND,
+            economic_type=(EconomicType.PURCHASE if (direction or Direction.DEBIT) == Direction.DEBIT
+                           else EconomicType.INCOME if direction_reason == "direction_from_section" else EconomicType.REFUND),
             notes=get(cells, "notes"),
             category_declared=get(cells, "category") or None,
             account_name=get(cells, "account") or None,
@@ -389,6 +421,13 @@ def normalize_table(
             "date_order_assumed", IssueSeverity.CHECK,
             f"Some dates, like 05/07/2025, could be read two ways. I read them as {order}.",
             "Confirm the date format, or switch it.", field_name="date",
+        ))
+    if period_issue:
+        issues.append(_issue(
+            "date_from_period", IssueSeverity.CHECK,
+            f"This sheet has no dates on its rows. It says it covers {period_date:%B %Y}, so I dated every row "
+            f"{period_date:%d %B %Y}.",
+            "Confirm, or add a file with real dates if you need day-by-day detail.", field_name="date",
         ))
     if sign_assumed_used:
         issues.append(_issue(

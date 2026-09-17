@@ -108,6 +108,9 @@ _EXTRA_ENGLISH = {
     "amount": {"amount inr", "transaction value", "trnamt", "amt", "net amount", "total amount", "amount rs"},
     "debit": {"amount debited", "debited", "debit inr", "paid", "expense", "expenses", "outgoing"},
     "credit": {"amount credited", "credited", "credit inr", "income", "incoming"},
+    "category": {"expense type", "type of expense", "expense category", "spend category", "spending category",
+                 "category name", "expense head", "budget category", "subcategory", "sub category", "spend type",
+                 "purpose category", "classification", "category type", "kategorie"},
     "marker": {"cdtdbtind", "cdt dbt ind", "credit debit indicator", "cr dr indicator", "dr or cr"},
 }
 for _role, _syns in (*_INTERNATIONAL_SYNONYMS.items(), *_EXTRA_ENGLISH.items()):

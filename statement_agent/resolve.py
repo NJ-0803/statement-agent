@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal
 
+from .categories import WALLET_TOPUP_RE, by_words as category_by_words, canonical as canonical_category, merchant_key
 from .corrections import assign_merchant_names, best_rule
 from .normalize import normalize_merchant
 from .schema import CorrectionRule, Direction, Document, EconomicType, Transaction
@@ -73,7 +74,9 @@ def refine_economic_type(t: Transaction, doc_type: str = "unknown") -> None:
     desc = t.description_raw or t.merchant_raw or ""
 
     if t.direction == Direction.DEBIT and t.economic_type == EconomicType.PURCHASE:
-        if _CASH_WITHDRAWAL_RE.search(desc):
+        if WALLET_TOPUP_RE.search(desc):
+            t.economic_type = EconomicType.TRANSFER  # money into your own wallet, spent later from there
+        elif _CASH_WITHDRAWAL_RE.search(desc):
             t.economic_type = EconomicType.CASH_WITHDRAWAL
         elif _CARD_BILL_PAYMENT_RE.search(desc):
             t.economic_type = EconomicType.CREDIT_CARD_PAYMENT
@@ -195,10 +198,18 @@ def assign_merchant_normalization(transactions: list[Transaction]) -> None:
         t.merchant_normalized = normalize_merchant(t.merchant_raw)
 
 
-def assign_categories(transactions: list[Transaction], rules: list[CorrectionRule] = ()) -> None:
-    """Category precedence: a row you changed yourself (never recomputed) > your correction rule > our
-    keyword list > the source file's own category column > none."""
+def assign_categories(transactions: list[Transaction], rules: list[CorrectionRule] = (),
+                      knowledge: dict[str, tuple[str, str]] | None = None) -> None:
+    """Category precedence, most trusted first:
+      you   a row you changed yourself (never recomputed)
+      rule  your correction rule
+      file  the source file's own category label (mapped onto a built-in name when it is one)
+      learned  what a label in one of your files, or your own change, taught about this merchant
+      keywords  the built-in merchant/word lists
+      groq  what Groq said about this merchant earlier (groq_categorize.py; cached, never re-asked here)
+    A file's own label outranks keywords (§39): it's your own classification of that row."""
     category_rules = [r for r in rules if r.category]
+    knowledge = knowledge or {}
     for t in transactions:
         if t.category_source == "you":
             continue
@@ -207,22 +218,27 @@ def assign_categories(transactions: list[Transaction], rules: list[CorrectionRul
             t.category = t.category_confidence = t.category_source = t.category_rule_id = None
             continue
         t.category_rule_id = None
+        text = t.merchant_raw or t.description_raw
         rule = best_rule(t, category_rules)
-        result = categorize(t.merchant_raw or t.description_raw)
+        declared = canonical_category(t.category_declared)
+        learned = knowledge.get(merchant_key(text))
         if rule is not None:
             t.category, t.category_confidence, t.category_source, t.category_rule_id = rule.category, 1.0, "rule", rule.rule_id
-        elif result.category is not None:
-            t.category = result.category
-            t.category_confidence = result.confidence
+            continue
+        if declared:
+            t.category, t.category_confidence, t.category_source = declared, 0.9, "file"
+            continue
+        if learned and learned[1] in ("you", "file"):
+            t.category, t.category_confidence, t.category_source = learned[0], 0.85, "learned"
+            continue
+        result = categorize(text)
+        word_match = None if result.category else category_by_words(text)
+        if result.category is not None or word_match:
+            t.category = result.category or word_match
+            t.category_confidence = result.confidence if result.category else 0.8
             t.category_source = "keywords"
-        elif t.category_declared:
-            # Our keyword list didn't match (common for generic/anonymized merchant text
-            # like "Hardware Store" or "Phone Company"), but the source file declared its
-            # own category for this row — trust that over leaving it uncategorized, at a
-            # lower confidence since it's the file's own taxonomy, not verified against ours.
-            t.category = t.category_declared
-            t.category_confidence = 0.5
-            t.category_source = "file"
+        elif learned:
+            t.category, t.category_confidence, t.category_source = learned[0], 0.7, "groq"
         else:
             t.category = None
             t.category_confidence = 0.0
@@ -472,7 +488,8 @@ def detect_anomalies(transactions: list[Transaction], *, z_threshold: float = 3.
     return flags + dup_flags
 
 
-def resolve_all(doc: Document, transactions: list[Transaction], rules: list[CorrectionRule] = ()) -> list[AnomalyFlag]:
+def resolve_all(doc: Document, transactions: list[Transaction], rules: list[CorrectionRule] = (),
+                knowledge: dict | None = None) -> list[AnomalyFlag]:
     """Runs the full deterministic resolution pass for one document's transactions."""
     assign_extraction_sequence(transactions)
     assign_merchant_normalization(transactions)
@@ -480,7 +497,7 @@ def resolve_all(doc: Document, transactions: list[Transaction], rules: list[Corr
     detect_duplicates(transactions)
     assign_merchant_names(transactions, list(rules))
     assign_economic_types(transactions, list(rules))
-    assign_categories(transactions, list(rules))
+    assign_categories(transactions, list(rules), knowledge)
     reconcile_document(doc, transactions)
     flag_unusual_structure(doc, transactions)
     return detect_anomalies(transactions)

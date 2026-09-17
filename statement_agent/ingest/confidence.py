@@ -26,6 +26,7 @@ REASONS: dict[str, tuple[float, str]] = {
     "date_order_from_document": (0.9, "the date could be read two ways; I followed the other dates in this file"),
     "date_order_default": (0.6, "the date could be read two ways and nothing in the file settled it, so I used the usual format"),
     "date_order_confirmed": (1.0, "you confirmed the date format"),
+    "date_from_period": (0.7, "the row has no date, so it was given the month the sheet says it covers"),
     # amount
     "amount_read": (1.0, "the amount was read directly from the file"),
     # direction
@@ -34,6 +35,7 @@ REASONS: dict[str, tuple[float, str]] = {
     "direction_marker": (1.0, "the Dr/Cr column says which way the money moved"),
     "direction_unmarked": (0.5, "the Dr/Cr column was empty and the amount has no sign, so I assumed money out"),
     "direction_sign_assumed": (0.6, "a minus sign could mean money in or out here, and nothing in the file settled which"),
+    "direction_from_section": (0.95, "the row sits under an Income or Expenses heading"),
     "direction_from_balance": (0.9, "the running balance changed by exactly this amount"),
     "direction_confirmed": (1.0, "you said which way the money moved"),
     # currency
@@ -49,6 +51,7 @@ REASONS: dict[str, tuple[float, str]] = {
 # Reason codes that one file-level issue covers for every row carrying them.
 FILE_LEVEL_RULE = {
     "date_order_default": "date_order_assumed",
+    "date_from_period": "date_from_period",
     "currency_assumed": "currency_assumed",
     "direction_sign_assumed": "sign_convention_assumed",
     "read_from_image": "read_from_image",
