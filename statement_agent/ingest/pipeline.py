@@ -37,9 +37,13 @@ from ..store import (
     DuplicateDocument, Store, document_from_dict, document_to_dict, transaction_from_dict, transaction_to_dict,
 )
 from .confidence import explain, gate_issues, low_confidence_fields, set_field
+from .columns import mask_card_number
+from .formats import EXTRA_TABULAR_EXTENSIONS, SHEET_EXTENSIONS
 from .csv_parser import CsvParseResult, file_hash, parse_sniffed
 from .image_parser import SUPPORTED_IMAGE_EXTENSIONS, parse_image
-from .mapping import ColumnMapping, MappingError, apply_user_mapping, header_fingerprint, infer_mapping
+from .mapping import (
+    ColumnMapping, MappingError, apply_user_mapping, header_fingerprint, infer_mapping, set_format_sign_convention,
+)
 from .pdf_native import parse_pdf_native
 from .quality import assess
 from .sniff import TableTooLarge, sniff_file
@@ -48,10 +52,12 @@ from ..schema import ExtractionMethod
 from .vocab import KNOWN_CURRENCIES
 
 PARSER_VERSION = "staged-import-2"
-SUPPORTED_EXTENSIONS = {".pdf", ".csv", ".xlsx"} | SUPPORTED_IMAGE_EXTENSIONS
-TABULAR_EXTENSIONS = {".csv", ".xlsx"}
+TABULAR_EXTENSIONS = {".csv", ".xlsx"} | EXTRA_TABULAR_EXTENSIONS
+SUPPORTED_EXTENSIONS = {".pdf"} | TABULAR_EXTENSIONS | SUPPORTED_IMAGE_EXTENSIONS
 MAX_PDF_PAGES = 200
 PREVIEW_ROWS = 20
+_SIGNED_OUT_FORMATS = {".ofx": "OFX", ".qfx": "QFX", ".qif": "QIF", ".sta": "MT940", ".mt940": "MT940",
+                       ".940": "MT940", ".xml": "bank XML"}
 
 STATE_MESSAGES = {
     ImportState.UPLOADED: "Waiting to be read.",
@@ -171,6 +177,9 @@ def update_mapping(store: Store, job_id: str, data: dict) -> ImportJob:
         raise MappingError("That table doesn't exist in this file.")
     base = ColumnMapping.from_dict(staging["mapping"]) if staging.get("mapping") else infer_mapping(table)
     mapping = apply_user_mapping(table, base, data) if "roles" in data else infer_mapping(table)
+    ext = os.path.splitext(job.stored_path)[1].lower()
+    if ext in _SIGNED_OUT_FORMATS:
+        set_format_sign_convention(mapping, _SIGNED_OUT_FORMATS[ext])
     staging["table"] = {"sheet": table.sheet, "header_row": table.header_row}
     staging["mapping"] = mapping.to_dict()
     _evaluate(store, job, staging)
@@ -197,8 +206,13 @@ def update_review(store: Store, job_id: str, data: dict) -> ImportJob:
     date_order = data.get("date_order")
     if date_order is not None and date_order not in ("DMY", "MDY"):
         raise MappingError("date_order must be DMY or MDY")
-    if (currency or date_order) and job.file_kind == "tabular" and staging.get("mapping"):
+    negative_means = data.get("negative_means")
+    if negative_means is not None and negative_means not in ("CREDIT", "DEBIT"):
+        raise MappingError("negative_means must be CREDIT or DEBIT")
+    if (currency or date_order or negative_means) and job.file_kind == "tabular" and staging.get("mapping"):
         mapping = ColumnMapping.from_dict(staging["mapping"])
+        if negative_means:
+            mapping.negative_means, mapping.negative_means_source = negative_means, "user"
         if currency:
             mapping.currency, mapping.currency_source = str(currency).upper(), "user"
         if date_order:
@@ -269,6 +283,9 @@ def _analyze_tabular(store: Store, job: ImportJob, staging: dict) -> None:
         staging["table"], staging["mapping"] = None, None
         return
     mapping = infer_mapping(table, profile=store.get_profile(header_fingerprint(table)))
+    ext = os.path.splitext(job.stored_path)[1].lower()
+    if ext in _SIGNED_OUT_FORMATS:
+        set_format_sign_convention(mapping, _SIGNED_OUT_FORMATS[ext])
     staging["table"] = {"sheet": table.sheet, "header_row": table.header_row}
     staging["mapping"] = mapping.to_dict()
 
@@ -276,7 +293,11 @@ def _analyze_tabular(store: Store, job: ImportJob, staging: dict) -> None:
 def _run_tabular(job: ImportJob, staging: dict, decisions: ReviewDecisions) -> CsvParseResult:
     sniffed = sniff_file(job.stored_path)
     mapping = ColumnMapping.from_dict(staging["mapping"]) if staging.get("mapping") else None
-    method = ExtractionMethod.XLSX_ROW if job.stored_path.lower().endswith(".xlsx") else ExtractionMethod.CSV_ROW
+    ext = os.path.splitext(job.stored_path)[1].lower()
+    method = (ExtractionMethod.XLSX_ROW if ext in (".xlsx", ".xls", ".ods")
+              else ExtractionMethod.TABLE_ROW if ext in SHEET_EXTENSIONS
+              else ExtractionMethod.RECORD if ext in EXTRA_TABULAR_EXTENSIONS - {".tsv", ".txt", ".tab", ".psv", ".dat"}
+              else ExtractionMethod.CSV_ROW)
     result = parse_sniffed(job.stored_path, sniffed, extraction_method=method, mapping=mapping, decisions=decisions)
     staging["sniff"] = {
         "kind": sniffed.kind, "encoding": sniffed.encoding, "delimiter": sniffed.delimiter,
@@ -288,7 +309,15 @@ def _run_tabular(job: ImportJob, staging: dict, decisions: ReviewDecisions) -> C
     }
     table = result.table
     staging["headers"] = table.headers if table else []
-    staging["sample_rows"] = [{"row": n, "cells": cells} for n, cells in table.rows[:PREVIEW_ROWS]] if table else []
+    card_cols = {c.index for c in result.extra_columns if c.kind == "card number" or c.meaning == "card number"}
+    staging["sample_rows"] = [
+        {"row": n, "cells": [mask_card_number(v) if j in card_cols else v for j, v in enumerate(cells)]}
+        for n, cells in table.rows[:PREVIEW_ROWS]
+    ] if table else []
+    staging["extra_columns"] = [c.to_dict() for c in result.extra_columns]
+    for c in staging["extra_columns"]:
+        if c["index"] in card_cols:
+            c["sample"] = [mask_card_number(v) for v in c["sample"]]
     staging["preamble"] = [{"row": n, "cells": cells} for n, cells in table.preamble[:10]] if table else []
     return result
 
@@ -547,6 +576,7 @@ def _txn_preview(t, rules_by_id=None) -> dict:
         "row": t.source.row if t.source else None, "page": t.source.page if t.source else None,
         "flagged": "FLAGGED:" in t.notes or t.duplicate_of is not None,
         "source_text": (t.source.raw_text if t.source else "")[:300],
+        "extra_fields": dict(t.extra_fields),
         "unsure": [{"field": f, "confidence": c, "reason": explain(r)} for f, c, r in low_confidence_fields(t)],
         "category": t.category, "merchant_name": t.merchant_canonical,
         "why": describe_source(t, rules_by_id or {}),

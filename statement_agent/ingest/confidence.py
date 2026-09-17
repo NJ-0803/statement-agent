@@ -33,6 +33,7 @@ REASONS: dict[str, tuple[float, str]] = {
     "direction_sign": (1.0, "the amount's sign or Cr/Dr ending says which way the money moved"),
     "direction_marker": (1.0, "the Dr/Cr column says which way the money moved"),
     "direction_unmarked": (0.5, "the Dr/Cr column was empty and the amount has no sign, so I assumed money out"),
+    "direction_sign_assumed": (0.6, "a minus sign could mean money in or out here, and nothing in the file settled which"),
     "direction_from_balance": (0.9, "the running balance changed by exactly this amount"),
     "direction_confirmed": (1.0, "you said which way the money moved"),
     # currency
@@ -49,6 +50,7 @@ REASONS: dict[str, tuple[float, str]] = {
 FILE_LEVEL_RULE = {
     "date_order_default": "date_order_assumed",
     "currency_assumed": "currency_assumed",
+    "direction_sign_assumed": "sign_convention_assumed",
     "read_from_image": "read_from_image",
 }
 

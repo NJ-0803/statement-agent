@@ -41,6 +41,8 @@ class ExtractionMethod(str, Enum):
     VISION_OCR = "VISION_OCR"
     CSV_ROW = "CSV_ROW"
     XLSX_ROW = "XLSX_ROW"
+    TABLE_ROW = "TABLE_ROW"  # a table inside a .docx or .html statement
+    RECORD = "RECORD"  # one record of a structured export (OFX/QFX, QIF, MT940, JSON, XML)
 
 
 @dataclass
@@ -147,6 +149,8 @@ class Transaction:
     economic_type_auto: str | None = None
     economic_type_source: str | None = None
     economic_type_rule_id: str | None = None
+    extra_fields: dict[str, str] = field(default_factory=dict)  # every source column that isn't a core
+    # field, by its header ("Payment Mode": "UPI") — nothing a file carried is dropped (ingest/columns.py)
 
 
 # ---------------------------------------------------------------------------

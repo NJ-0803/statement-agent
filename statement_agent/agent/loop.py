@@ -99,6 +99,8 @@ TOOL_SCHEMAS = [
                 "date_to": {"type": "string", "description": "ISO date YYYY-MM-DD"},
                 "merchant_contains": {"type": "string"},
                 "currency": {"type": "string"},
+                "field_name": {"type": "string", "description": "an extra column's header, as seen in a result's `extra_fields` (e.g. 'Payment Mode')"},
+                "field_contains": {"type": "string", "description": "case-insensitive text the extra column's value must contain (e.g. 'UPI')"},
                 "include_flagged": {"type": "boolean", "description": "include duplicate-flagged/implausible-date rows (default true)"},
                 "sort_by": {"type": "string", "enum": ["amount_desc", "amount_asc", "date_desc", "date_asc", "extraction_order", "closest_to_amount"]},
                 "target_amount": {"type": "string", "description": "required for sort_by='closest_to_amount' — the value to sort by proximity to, as a decimal string"},
@@ -169,7 +171,8 @@ TOOL_SCHEMAS = [
                 "date_from": {"type": "string"},
                 "date_to": {"type": "string"},
                 "currency": {"type": "string"},
-                "group_by": {"type": "string", "enum": ["month", "category", "merchant", "account"]},
+                "group_by": {"type": "string", "enum": ["month", "category", "merchant", "account", "field"]},
+                "group_field": {"type": "string", "description": "with group_by='field': the extra column to group by, e.g. 'Payment Mode' or 'City'"},
                 "convert_to": {"type": "string", "description": "3-letter currency code, e.g. INR — converts and sums everything into this one currency, alongside the normal per-currency breakdown"},
             },
         },
@@ -509,6 +512,8 @@ def _dispatch(tool_name: str, tool_input: dict, ledger: list[Transaction], docum
             date_to=_parse_date(tool_input.get("date_to")),
             merchant_contains=tool_input.get("merchant_contains"),
             currency=tool_input.get("currency"),
+            field_name=tool_input.get("field_name"),
+            field_contains=tool_input.get("field_contains"),
             include_flagged=tool_input.get("include_flagged", True),
             sort_by=tool_input.get("sort_by"),
             target_amount=tool_input.get("target_amount"),
@@ -527,6 +532,7 @@ def _dispatch(tool_name: str, tool_input: dict, ledger: list[Transaction], docum
             currency=tool_input.get("currency"),
             group_by=tool_input.get("group_by"),
             convert_to=tool_input.get("convert_to"),
+            group_field=tool_input.get("group_field"),
         )
     if tool_name == "compare_periods":
         return T.compare_periods(

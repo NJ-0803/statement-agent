@@ -82,7 +82,11 @@ def signature_problem(ext: str, head: bytes) -> str | None:
         ok = head.startswith(b"\x89PNG\r\n\x1a\n")
     elif ext in (".jpg", ".jpeg"):
         ok = head.startswith(b"\xff\xd8\xff")
-    elif ext == ".csv":
+    elif ext in (".ods", ".docx"):
+        ok = head.startswith(b"PK\x03\x04")
+    elif ext == ".xls":
+        ok = head.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1")
+    elif ext in _TEXT_EXTENSIONS:
         binary_magic = (b"%PDF", b"PK\x03\x04", b"MZ", b"\x7fELF", b"\x89PNG", b"\xff\xd8\xff", b"\xd0\xcf\x11\xe0")
         ok = not head.startswith(binary_magic) and (b"\x00" not in head or detect_encoding(head)[0].startswith("utf-16"))
     else:
@@ -90,21 +94,28 @@ def signature_problem(ext: str, head: bytes) -> str | None:
     return None if ok else f"This file's contents don't match its {ext} name, so I didn't open it."
 
 
-def xlsx_container_problem(path: str) -> str | None:
+_TEXT_EXTENSIONS = {".csv", ".tsv", ".txt", ".tab", ".psv", ".dat", ".ofx", ".qfx", ".qif", ".sta", ".mt940",
+                    ".940", ".json", ".xml", ".html", ".htm"}
+_CONTAINER_MAIN_PART = {".xlsx": ("xl/workbook.xml", "Excel workbook"), ".ods": ("content.xml", "OpenDocument spreadsheet"),
+                        ".docx": ("word/document.xml", "Word document")}
+
+
+def xlsx_container_problem(path: str, ext: str = ".xlsx") -> str | None:
+    part, what = _CONTAINER_MAIN_PART[ext]
     try:
         with zipfile.ZipFile(path) as z:
             infos = z.infolist()
             names = {i.filename for i in infos}
-            if "xl/workbook.xml" not in names:
-                return "This isn't a valid Excel workbook."
-            if any(n.lower().endswith("vbaproject.bin") for n in names):
-                return "This workbook contains macros, so I didn't open it. Save it as a plain .xlsx and try again."
+            if part not in names:
+                return f"This isn't a valid {what}."
+            if any(n.lower().endswith("vbaproject.bin") or n.lower().startswith("basic/") for n in names):
+                return f"This file contains macros, so I didn't open it. Save it as a plain {ext} and try again."
             total = sum(i.file_size for i in infos)
             packed = sum(i.compress_size for i in infos) or 1
             if total > _MAX_XLSX_UNCOMPRESSED or total / packed > _MAX_XLSX_RATIO:
-                return "This workbook expands to an unsafe size, so I didn't open it."
+                return "This file expands to an unsafe size, so I didn't open it."
     except zipfile.BadZipFile:
-        return "This isn't a valid Excel workbook."
+        return f"This isn't a valid {what}."
     return None
 
 
@@ -212,7 +223,7 @@ def create_app(db_path: str = "ledger.db", *, upload_dir: str = UPLOAD_DIR, run_
                 safe = secure_filename(f.filename or "")
                 ext = os.path.splitext(safe)[1].lower()
                 if not safe or ext not in SUPPORTED_EXTENSIONS:
-                    rejected.append({"file": original, "error": "This type of file isn't supported. Use PDF, CSV, Excel (.xlsx), JPG or PNG."})
+                    rejected.append({"file": original, "error": "This type of file isn't supported. Use a PDF; a spreadsheet (CSV, TSV, Excel, ODS); a bank download (OFX, QFX, QIF, MT940); a JSON or XML export; a .docx or .html statement; or a JPG/PNG photo."})
                     continue
                 f.stream.seek(0, os.SEEK_END)
                 size = f.stream.tell()
@@ -234,8 +245,8 @@ def create_app(db_path: str = "ledger.db", *, upload_dir: str = UPLOAD_DIR, run_
                 os.makedirs(job_dir, exist_ok=True)
                 dest = os.path.join(job_dir, safe)
                 f.save(dest)
-                if ext == ".xlsx":
-                    problem = xlsx_container_problem(dest)
+                if ext in _CONTAINER_MAIN_PART:
+                    problem = xlsx_container_problem(dest, ext)
                     if problem:
                         shutil.rmtree(job_dir, ignore_errors=True)
                         rejected.append({"file": original, "error": problem})
@@ -294,6 +305,7 @@ def create_app(db_path: str = "ledger.db", *, upload_dir: str = UPLOAD_DIR, run_
             "transactions": staging.get("preview_transactions", []),
             "decisions": staging.get("decisions"),
             "warnings": staging.get("warnings", []),
+            "extra_columns": staging.get("extra_columns", []),
             "role_options": [{"value": r, "label": ROLE_LABELS[r]} for r in ROLES],
             "currencies": sorted(KNOWN_CURRENCIES),
         })
@@ -390,6 +402,7 @@ def create_app(db_path: str = "ledger.db", *, upload_dir: str = UPLOAD_DIR, run_
             "merchant_name": t.merchant_canonical, "merchant_source": t.merchant_source,
             "why": describe_source(t, rules_by_id), "suggested_pattern": suggested_pattern(t),
             "file": os.path.basename(src.file_path) if src and src.file_path else None,
+            "extra_fields": dict(t.extra_fields),
         }
 
     def _links_by_txn(events):
@@ -476,7 +489,7 @@ def create_app(db_path: str = "ledger.db", *, upload_dir: str = UPLOAD_DIR, run_
             category = request.args.get("category") or ""
             rows = [
                 t for t in ledger
-                if (not q or q in f"{t.description_raw} {t.merchant_canonical or ''}".lower())
+                if (not q or q in f"{t.description_raw} {t.merchant_canonical or ''} {' '.join(t.extra_fields.values())}".lower())
                 and (not category or (t.category or "") == ("" if category == "__none__" else category))
                 and (category != "__none__" or t.economic_type == EconomicType.PURCHASE)
             ]

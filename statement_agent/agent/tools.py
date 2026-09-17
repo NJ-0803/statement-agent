@@ -25,6 +25,22 @@ from ..normalize import DocumentDateResolver
 from ..schema import Direction, EconomicType, Transaction
 
 
+def _field_matches(t: Transaction, name: str | None, contains: str | None) -> bool:
+    """Extra-column filter: `name` matches a header case-insensitively (None = any column); `contains` is a
+    case-insensitive substring of the value (None = the column just has to be present)."""
+    for header, value in t.extra_fields.items():
+        if name and header.strip().lower() != name.strip().lower():
+            continue
+        if contains is None or contains.lower() in str(value).lower():
+            return True
+    return False
+
+
+def extra_field_value(t: Transaction, name: str) -> str | None:
+    wanted = name.strip().lower()
+    return next((v for h, v in t.extra_fields.items() if h.strip().lower() == wanted), None)
+
+
 def _is_clean(t: Transaction) -> bool:
     """A transaction with no open question attached — safe to include in a verified total."""
     return t.duplicate_of is None and t.date_plausible
@@ -46,6 +62,7 @@ class TxnView:
     economic_type: str
     category: str | None
     category_source: str | None  # "keywords" | "file" | "rule" (the person's correction rule) | "you" (set by hand)
+    extra_fields: dict  # every other column the source file carried, by its header (e.g. {"Payment Mode": "UPI"})
     account: str | None  # which of the source's own accounts/cards this row belongs to, when declared
     source_file: str
     source_page: int | None
@@ -73,6 +90,7 @@ def _view(t: Transaction) -> TxnView:
         economic_type=t.economic_type.value,
         category=t.category,
         category_source=t.category_source,
+        extra_fields=dict(t.extra_fields),
         account=t.account_name,
         source_file=src.file_path if src else "",
         source_page=src.page if src else None,
@@ -123,6 +141,8 @@ def search_transactions(
     date_to: date | None = None,
     merchant_contains: str | None = None,
     currency: str | None = None,
+    field_name: str | None = None,
+    field_contains: str | None = None,
     include_flagged: bool = True,
     sort_by: str | None = None,  # "amount_desc" | "amount_asc" | "date_desc" | "date_asc" | "extraction_order" | "closest_to_amount"
     target_amount: str | None = None,  # required for sort_by="closest_to_amount"
@@ -169,6 +189,8 @@ def search_transactions(
         if merchant_contains and merchant_contains.lower() not in f"{t.merchant_raw or ''} {t.merchant_canonical or ''}".lower():
             continue
         if currency and t.currency != currency:
+            continue
+        if (field_name or field_contains) and not _field_matches(t, field_name, field_contains):
             continue
         if not include_flagged and not _is_clean(t):
             continue
@@ -315,8 +337,9 @@ def aggregate_spending(
     date_from: date | None = None,
     date_to: date | None = None,
     currency: str | None = None,
-    group_by: str | None = None,  # "month" | "category" | "merchant" | "account" | None
+    group_by: str | None = None,  # "month" | "category" | "merchant" | "account" | "field" | None
     convert_to: str | None = None,
+    group_field: str | None = None,  # the extra column to group by when group_by == "field"
 ) -> AggregateResult:
     matched = [
         t
@@ -368,6 +391,8 @@ def aggregate_spending(
                 key = t.merchant_canonical or t.merchant_normalized or t.merchant_raw or "UNKNOWN"
             elif group_by == "account":
                 key = t.account_name or "UNKNOWN ACCOUNT"
+            elif group_by == "field" and group_field:
+                key = extra_field_value(t, group_field) or f"NO {group_field.upper()}"
             else:
                 continue
             group_breakdown.setdefault(key, {})

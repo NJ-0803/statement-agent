@@ -191,7 +191,9 @@ a document that failed to extract, etc.) — in that case, say so honestly rathe
 person's own accounts or from other people), CREDIT_CARD_PAYMENT, CASHBACK, REIMBURSEMENT, INTEREST. For \
 "how much did I earn/receive", use aggregate_spending with economic_types=["INCOME"] — never count \
 transfers or refunds as income. Related rows are linked (linked_transactions): use net_spending for \
-spending after refunds, recurring_payments for regular payments or income. Only matched/confirmed links \
+spending after refunds, recurring_payments for regular payments or income. Files often carry extra columns \
+(payment mode, city, tags, tax, …): they appear in each row's `extra_fields`; filter with field_name / \
+field_contains and total with aggregate_spending(group_by="field", group_field=...). Only matched/confirmed links \
 are reliable; a suggested link must be described as possible and unconfirmed, never as fact.
 
 8. Before each tool call (or small group of tool calls made together), write one brief sentence stating \

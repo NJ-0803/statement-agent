@@ -400,8 +400,10 @@ research work that can't be done in code at all.
 - Reconciliation can't check a statement with rows in a second currency (`CANNOT_CHECK`): the card's
   converted amount isn't extracted.
 - Merged cells in XLSX are read as blank (openpyxl read-only mode); formulas use cached values only.
-- Header vocabulary is English. A German or Hindi header goes to needs_mapping, which is honest but
-  unhelpful.
+- Header vocabulary now covers German, French, Spanish, Italian, Portuguese and Hindi (§37); other
+  languages still stop at needs_mapping. Unrecognised columns are kept as typed extra fields, but
+  Claude-assisted column suggestions (opt-in) aren't built. .xls reading has no real-file test; fixed-width
+  text and password-protected spreadsheets aren't read.
 - Category, merchant-name and kind corrections are remembered as word rules (`DECISIONS.md` §35–36).
   Rules can't match on amount or account, and can't be exported or shared.
 - No source viewer that opens the original page or row next to an answer. "Why?" shows the cited rows'
@@ -417,5 +419,6 @@ research work that can't be done in code at all.
 **Legal and regulatory (roadmap §5.2–5.3) — needs counsel, not code**
 - DPDP Act / DPDP Rules 2025 notice, consent, retention, breach and grievance design.
 - Account Aggregator / FIU path.
-- PCI DSS scope: PAN-like values are not masked at intake.
+- PCI DSS scope: card-number *columns* are masked to the last four digits at intake (§37); card numbers
+  written inside free-text descriptions or PDFs are not.
 - Confirming the Anthropic data-retention terms of the deployed account.

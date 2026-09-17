@@ -32,6 +32,7 @@ class CsvParseResult:
     mapping: ColumnMapping | None = None
     table: TableCandidate | None = None
     sniff: SniffResult | None = None
+    extra_columns: list = field(default_factory=list)
 
 
 def file_hash(path: str) -> str:
@@ -85,6 +86,7 @@ def parse_sniffed(
     return CsvParseResult(
         document=result.document, transactions=result.transactions, rejected_rows=rejected, issues=result.issues,
         candidates=result.candidates, mapping=mapping, table=table, sniff=sniffed,
+        extra_columns=result.extra_columns,
     )
 
 

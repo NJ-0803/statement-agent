@@ -19,6 +19,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from ..normalize import DocumentDateResolver, normalize_amount
+from .columns import describe_extra_columns, mask_card_number
 from .confidence import set_field
 from .statement_totals import StatedFigures, read_figures
 from ..schema import (
@@ -35,6 +36,7 @@ _ZERO_LIKE = {"", "-", "0", "0.0", "0.00", "0,00", "nil"}
 _EXPLICIT_SIGN_RE = re.compile(r"^\s*[-(]|(?:CR|DR|-)\s*$", re.IGNORECASE)
 _PREAMBLE_FIGURE_RE = re.compile(r"([-(]?\s*(?:₹|Rs\.?|INR)?\s*\d[\d,]*(?:[.,]\d{1,2})?\)?(?:\s*(?:CR|DR))?)", re.IGNORECASE)
 _TEXT_ONLY_ROLES = {"description", "notes", "reference"}
+_CR_DR_SUFFIX_RE = re.compile(r"(?:CR|DR)\.?\s*$", re.IGNORECASE)
 _TOTAL_ROW_RE = re.compile(r"^\s*(?:grand\s+)?totals?\s*:?\s*$", re.IGNORECASE)
 
 
@@ -61,6 +63,7 @@ class TabularResult:
     transactions: list[Transaction]
     candidates: list[RawTransactionCandidate]
     issues: list[ValidationIssue]
+    extra_columns: list = field(default_factory=list)  # columns.ExtraColumn for every non-core column
 
 
 def parse_money(raw: str, *, decimal_separator: str, default_currency: str):
@@ -112,13 +115,15 @@ def normalize_table(
         resolver._convention = mapping.date_order
 
     doc_currency = mapping.currency or default_currency
+    extra_columns = describe_extra_columns(table.headers, table.rows, set(roles.values()))
+    card_columns = {c.index for c in extra_columns if c.kind == "card number" or c.meaning == "card number"}
     header_lower = [h.lower() for h in table.headers]
     candidates: list[RawTransactionCandidate] = []
     issues: list[ValidationIssue] = []
     transactions: list[Transaction] = []
     by_key: dict[str, Transaction] = {}
     signed_amount: dict[str, bool] = {}
-    assumed_currency_used = ambiguous_date_used = False
+    assumed_currency_used = ambiguous_date_used = sign_assumed_used = False
     last_txn_candidate: RawTransactionCandidate | None = None
     stated_opening = stated_closing = None
     stated = StatedFigures()
@@ -143,7 +148,8 @@ def normalize_table(
     for row_no, raw_cells in table.rows:
         cells = list(raw_cells) + [""] * (width - len(raw_cells))
         key = f"row:{row_no}"
-        cell_map = {table.headers[j]: cells[j] for j in range(min(width, len(cells))) if cells[j]}
+        cell_map = {table.headers[j]: (mask_card_number(cells[j]) if j in card_columns else cells[j])
+                    for j in range(min(width, len(cells))) if cells[j]}
         cand = RawTransactionCandidate(key=key, source_row=row_no, cells=cell_map, outcome="ignored")
         candidates.append(cand)
 
@@ -249,6 +255,13 @@ def normalize_table(
                 else:
                     direction = parsed_amount.direction
                     signed_amount[key] = bool(_EXPLICIT_SIGN_RE.search(raw_amount))
+                    if not _CR_DR_SUFFIX_RE.search(raw_amount):
+                        # normalize_amount reads a bare minus as money in; the file's own convention decides
+                        negative = direction == Direction.CREDIT
+                        money_in_when_negative = mapping.negative_means == "CREDIT"
+                        direction = Direction.CREDIT if negative == money_in_when_negative else Direction.DEBIT
+                        if mapping.negative_means_source == "assumed":
+                            direction_reason, sign_assumed_used = "direction_sign_assumed", True
                     if model == AmountModel.AMOUNT_WITH_MARKER.value:
                         marked = marker_direction(get(cells, "marker"))
                         if marked:
@@ -302,6 +315,11 @@ def normalize_table(
             value_date = vd.value
 
         description = get(cells, "description")
+        extras = {}
+        for col in extra_columns:
+            value = cells[col.index].strip() if col.index < len(cells) else ""
+            if value:
+                extras[col.header] = mask_card_number(value) if col.index in card_columns else value
         txn = Transaction(
             transaction_id=str(uuid.uuid4()),
             document_id=document.document_id,
@@ -320,6 +338,7 @@ def normalize_table(
             value_date=value_date,
             reference_id=get(cells, "reference") or None,
             balance_after=balance_after,
+            extra_fields=extras,
             source=SourceRef(
                 file_path=path, file_hash=fhash, row=row_no, raw_text=str(cell_map),
                 extraction_method=extraction_method, extraction_confidence=1.0,
@@ -367,6 +386,13 @@ def normalize_table(
             f"Some dates, like 05/07/2025, could be read two ways. I read them as {order}.",
             "Confirm the date format, or switch it.", field_name="date",
         ))
+    if sign_assumed_used:
+        issues.append(_issue(
+            "sign_convention_assumed", IssueSeverity.CHECK,
+            "Some amounts have a minus sign, and nothing in this file shows whether that means money in or money "
+            f"out. I read a minus sign as money {'in' if mapping.negative_means == 'CREDIT' else 'out'}.",
+            "Confirm, or switch it.", field_name="direction",
+        ))
     if table.duplicate_headers:
         issues.append(_issue(
             "duplicate_headers", IssueSeverity.INFO,
@@ -384,7 +410,8 @@ def normalize_table(
         if issue.issue_id in decisions.acknowledged and issue.severity != IssueSeverity.BLOCKING:
             issue.resolution = "acknowledged"
 
-    return TabularResult(document=document, transactions=transactions, candidates=candidates, issues=issues)
+    return TabularResult(document=document, transactions=transactions, candidates=candidates, issues=issues,
+                         extra_columns=extra_columns)
 
 
 def _balance_pass(transactions, candidates, model, decisions, stated_opening, document):

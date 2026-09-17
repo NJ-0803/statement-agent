@@ -211,7 +211,10 @@ class TestRowNormalization:
     def test_decimal_comma_amounts(self, tmp_path):
         r = parse_csv(_write(tmp_path, "eu.csv", "Date;Description;Amount;Currency\n01.04.2025;REWE;-12,50;EUR\n02.04.2025;SALARY;2.500,00;EUR\n"))
         assert r.mapping.decimal_separator == ","
-        assert [(t.amount, t.direction) for t in r.transactions] == [(Decimal("12.50"), Direction.CREDIT), (Decimal("2500.00"), Direction.DEBIT)]
+        # the SALARY row is positive, so this file's minus sign means money out (DECISIONS.md §37) — before
+        # that evidence was used, this test expected the salary as money out and the REWE charge as money in
+        assert r.mapping.negative_means == "DEBIT"
+        assert [(t.amount, t.direction) for t in r.transactions] == [(Decimal("12.50"), Direction.DEBIT), (Decimal("2500.00"), Direction.CREDIT)]
 
     def test_excel_serial_dates(self, tmp_path):
         r = parse_csv(_write(tmp_path, "serial.csv", "Date,Description,Amount\n45748,TEA,10.00\n45749,COFFEE,12.00\n"))

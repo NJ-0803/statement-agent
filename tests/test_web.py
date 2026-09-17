@@ -334,7 +334,7 @@ class TestImportsEndpoint:
         assert inline_client.get("/api/status").get_json()["transaction_count"] == 2
 
     def test_unsupported_file_type_is_reported_not_silently_dropped(self, inline_client):
-        res = _upload(inline_client, b"not a real statement", "notes.txt")
+        res = _upload(inline_client, b"not a real statement", "notes.rtf")  # .txt is a supported table format now
         assert res.status_code == 400
         assert "isn't supported" in res.get_json()["rejected"][0]["error"]
 

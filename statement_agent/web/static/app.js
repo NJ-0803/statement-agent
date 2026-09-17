@@ -324,6 +324,11 @@
         h('ul', {}, ...(p.ignored_rows || []).map((r) => h('li', { text: `${r.row ? `Row ${r.row}` : r.page ? `Page ${r.page}` : 'Line'}: ${r.reason}${r.text ? ` — “${r.text}”` : ''}` })))));
     }
 
+    const kept = (p.extra_columns || []).filter((c) => c.kind !== 'empty');
+    if (kept.length && p.state !== 'needs_mapping') {
+      children.push(h('details', {}, h('summary', { text: `Other columns I kept (${kept.length})` }),
+        h('ul', {}, ...kept.map((c) => h('li', { text: `${c.header} — ${c.meaning ? `${c.meaning}, ` : ''}${c.kind}${c.sample.length ? `, e.g. ${c.sample.join(', ')}` : ''}` })))));
+    }
     if (p.kind === 'tabular' && (p.headers || []).length) children.push(mappingEditor(p));
     if (p.state !== 'needs_mapping' && (p.transactions || []).length) children.push(transactionsTable(p.transactions));
 
@@ -388,11 +393,15 @@
         } }));
     }
 
+    const extraByIndex = {};
+    (p.extra_columns || []).forEach((c) => { extraByIndex[c.index] = c; });
     const selects = p.headers.map((header, j) => {
       const id = `role-${j}`;
-      const sel = h('select', { id }, h('option', { value: '', text: 'Not needed' }),
+      const sel = h('select', { id }, h('option', { value: '', text: 'Keep as extra information' }),
         ...p.role_options.map((o) => h('option', { value: o.value, selected: byColumn[j] === o.value, text: o.label })));
+      const extra = extraByIndex[j];
       return { sel, cell: h('th', { scope: 'col' }, h('div', { text: header }),
+        extra ? h('div', { class: 'muted', style: 'font-weight:400', text: extraText(extra) }) : null,
         h('div', { class: 'role-select' }, h('label', { for: id, text: 'What is in this column?' }), sel)) };
     });
     const rows = (p.sample_rows || []).slice(0, 8).map((r) => h('tr', {},
@@ -426,6 +435,17 @@
       } catch (err) { alerts.replaceChildren(errorBox(err.message)); e.currentTarget.disabled = false; }
     } })));
     return wrap;
+  }
+
+  function extraText(c) {
+    if (c.kind === 'empty') return 'Kept (empty in this file)';
+    return `Kept: ${c.meaning ? `${c.meaning}, ` : ''}${c.kind}`;
+  }
+
+  function extrasLine(fields) {
+    const entries = Object.entries(fields || {});
+    if (!entries.length) return null;
+    return h('p', { class: 'muted', style: 'margin:.1rem 0 0', text: entries.map(([k, v]) => `${k}: ${v}`).join(' · ') });
   }
 
   const FIELD_WORDS = { date: 'Date', amount: 'Amount', direction: 'Money in or out', currency: 'Currency' };
@@ -723,6 +743,7 @@
         h('p', { class: 'muted', style: 'margin:.2rem 0 0', text: [niceDate(t.date), t.merchant_name ? t.description : null, t.file].filter(Boolean).join(' · ') }),
         h('p', { style: 'margin:.35rem 0 0', text: `Kind: ${t.type_label}${t.type_source === 'you' ? ' — you set this' : t.type_source === 'rule' ? ' — from your rule' : t.type_source === 'link' ? ' — linked to money from your own account' : t.type_unsure ? ' — my best guess, change it if wrong' : ''}.` }),
         t.is_purchase || t.category ? h('p', { style: 'margin:.1rem 0 0', text: categoryLine(t) }) : null,
+        extrasLine(t.extra_fields),
         ...(t.links || []).map(linkLine),
         t.merchant_name ? h('p', { class: 'muted', style: 'margin:.1rem 0 0', text: `Merchant name “${t.merchant_name}” — ${t.why.merchant}.` }) : null,
         h('div', { class: 'actions', style: 'margin-top:.5rem' },

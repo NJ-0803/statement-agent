@@ -10,6 +10,7 @@ cells identically.
 from __future__ import annotations
 
 import re
+import unicodedata
 
 from ..normalize import DocumentDateResolver
 
@@ -75,6 +76,43 @@ ROLE_SYNONYMS: dict[str, set[str]] = {
     "notes": {"notes", "note", "remarks", "transaction notes", "memo", "comments", "comment"},
 }
 
+# Other languages' common bank-export headers (accents folded; see _fold). Kept apart so the English list
+# above stays readable; merged into ROLE_SYNONYMS below.
+_INTERNATIONAL_SYNONYMS: dict[str, set[str]] = {
+    "date": {
+        "datum", "buchungstag", "buchungsdatum", "transaktionsdatum", "date operation", "date de l operation",
+        "date comptable", "fecha", "fecha operacion", "fecha de operacion", "data", "data operazione",
+        "data contabile", "data movimento", "data transacao", "तारीख", "दिनांक", "लेनदेन तिथि", "तिथि",
+    },
+    "value_date": {"wertstellung", "valuta", "valutadatum", "date de valeur", "fecha valor", "data valuta", "मूल्य तिथि"},
+    "description": {
+        "verwendungszweck", "buchungstext", "beschreibung", "libelle", "libelle operation", "description operation",
+        "concepto", "descripcion", "detalle", "descrizione", "causale", "descricao", "historico", "विवरण", "ब्यौरा",
+    },
+    "amount": {"betrag", "umsatz", "montant", "importe", "importo", "valor", "राशि", "रकम"},
+    "debit": {"soll", "lastschrift", "debit euros", "cargo", "cargos", "dare", "uscite", "addebiti", "नामे", "निकासी"},
+    "credit": {"haben", "gutschrift", "credit euros", "abono", "abonos", "avere", "entrate", "accrediti", "जमा"},
+    "balance": {"saldo", "kontostand", "solde", "saldo disponible", "शेष", "बकाया"},
+    "currency": {"wahrung", "devise", "moneda", "valuta divisa", "divisa", "moeda", "मुद्रा"},
+    "reference": {"referenz", "reference operation", "referencia", "riferimento", "संदर्भ"},
+    "category": {"kategorie", "categorie", "categoria", "श्रेणी"},
+    "account": {"konto", "compte", "cuenta", "conto", "खाता"},
+    "notes": {"notiz", "bemerkung", "observaciones", "note", "टिप्पणी"},
+}
+_EXTRA_ENGLISH = {
+    "date": {"posted on", "created at", "created", "transaction time", "date of transaction", "trans date time",
+             "booking date time", "settlement date", "time stamp", "bookgdt dt", "bookg dt", "bookg dt dt", "dtposted"},
+    "value_date": {"valdt dt", "val dt", "val dt dt"},
+    "description": {"details of transaction", "narrative", "payee name", "merchant description", "ustrd",
+                    "rmtinf ustrd", "addtlntryinf", "transaction narration", "purpose"},
+    "amount": {"amount inr", "transaction value", "trnamt", "amt", "net amount", "total amount", "amount rs"},
+    "debit": {"amount debited", "debited", "debit inr", "paid", "expense", "expenses", "outgoing"},
+    "credit": {"amount credited", "credited", "credit inr", "income", "incoming"},
+    "marker": {"cdtdbtind", "cdt dbt ind", "credit debit indicator", "cr dr indicator", "dr or cr"},
+}
+for _role, _syns in (*_INTERNATIONAL_SYNONYMS.items(), *_EXTRA_ENGLISH.items()):
+    ROLE_SYNONYMS[_role] |= _syns
+
 # Substring cues for headers that match no synonym at all ("Posting Dt of Txn", "Withdrawls").
 ROLE_KEYWORDS: dict[str, tuple[str, ...]] = {
     "date": ("date",),
@@ -90,8 +128,8 @@ _CURRENCY_HEADER_TOKENS = {"inr": "INR", "rs": "INR", "usd": "USD", "eur": "EUR"
 _CURRENCY_SYMBOLS = {"₹": "INR", "$": "USD", "€": "EUR", "£": "GBP"}
 KNOWN_CURRENCIES = {"INR", "USD", "EUR", "GBP"}
 
-CREDIT_MARKERS = {"cr", "credit", "c", "deposit"}
-DEBIT_MARKERS = {"dr", "debit", "d", "withdrawal"}
+CREDIT_MARKERS = {"cr", "credit", "c", "deposit", "crdt", "haben", "in", "incoming", "जमा"}
+DEBIT_MARKERS = {"dr", "debit", "d", "withdrawal", "dbit", "soll", "out", "outgoing", "नामे"}
 
 _AMOUNT_SHAPE_RE = re.compile(
     r"^\s*(?:₹|\$|€|£|INR|USD|EUR|GBP|Rs\.?)?\s*[-(]?\s*\d[\d,.]*\s*\)?\s*(?:CR|DR|Cr|Dr|cr|dr)?\s*-?\s*(?:INR|USD|EUR|GBP)?\s*$"
@@ -107,11 +145,23 @@ CLOSING_BALANCE_RE = re.compile(r"^\s*closing\s+bal", re.IGNORECASE)
 _DATE_PROBE = DocumentDateResolver()
 
 
+def _fold(text: str) -> str:
+    """Drops accents from Latin letters ("libellé" -> "libelle", "währung" -> "wahrung") but keeps every
+    other script intact — Devanagari vowel signs are combining marks too, and must not be stripped."""
+    out = []
+    for ch in unicodedata.normalize("NFKD", text):
+        if unicodedata.combining(ch) and out and out[-1].isascii():
+            continue
+        out.append(ch)
+    return unicodedata.normalize("NFC", "".join(out))
+
+
 def normalize_header(raw: str) -> tuple[str, str | None]:
     """Returns (normalized header text, currency declared inside the header if any)."""
     text = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", raw or "")  # "TransactionType" -> "Transaction Type"
     currency = next((code for sym, code in _CURRENCY_SYMBOLS.items() if sym in text), None)
-    tokens = re.sub(r"[^0-9a-z]+", " ", text.lower()).split()
+    folded = _fold(text.lower())
+    tokens = "".join(ch if ch.isalnum() or unicodedata.category(ch).startswith("M") else " " for ch in folded).split()
     kept = []
     for tok in tokens:
         if tok in _CURRENCY_HEADER_TOKENS and len(tokens) > 1:

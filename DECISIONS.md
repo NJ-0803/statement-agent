@@ -1764,3 +1764,61 @@ connected for this change, so the UI was checked through its API responses and a
 browser.
 
 432 tests passing (22 new in `tests/test_linking.py`).
+
+## 37. Any financial file, any column
+
+Asked for directly: "it should not treat any new column as unknown … generally divide any transaction into
+columns", for "any kind of financial file".
+
+**Every column is kept (`ingest/columns.py`).** A column that isn't a core role is no longer "Not needed".
+It's stored on each transaction as `extra_fields` (header → value). A column's *kind* is judged from its
+values (date, time, money, number, percent, card number, code, email, UPI id, yes/no, category-like,
+text), and a *meaning* from its name (payment method, location, counterparty, tax, fee, exchange rate,
+tags, person, project, invoice, …). The review screen lists "Other columns I kept", and the column editor
+now says "Keep as extra information" and shows each column's kind. The agent sees `extra_fields` on every
+row, can filter with `field_name`/`field_contains`, and can total with
+`aggregate_spending(group_by="field", group_field=...)`. Card-number columns are masked to the last four
+digits before anything is stored, previewed or quoted in source text (the PCI item from §I, for columns).
+
+**Headers in other languages.** Header matching now folds accents on Latin letters only, and tokenizes by
+hand so Devanagari vowel signs (combining marks, which `\W` treats as separators) survive. German, French,
+Spanish, Italian, Portuguese and Hindi bank-export headers were added, plus more English ones and ISO 20022
+element names. Dr/Cr marker values now include CRDT/DBIT, Soll/Haben and जमा/नामे.
+
+**What a minus sign means — a real bug this surfaced.** With a single signed amount column, a minus sign
+was always read as money *in* (the expense-sheet convention). Bank exports use the opposite convention,
+so a German CSV's supermarket charge came out as money in and the salary as money out. An existing test
+had locked that in (`test_decimal_comma_amounts`, now corrected). `ColumnMapping.negative_means` is now
+decided from evidence:
+1. Salary/refund/interest-type rows (in several languages) show which sign money in carries.
+2. Failing that, a sign carried by at least two-thirds of the amounts is spending.
+3. Failing both, the old default stands but is marked *assumed*, which becomes a "sign_convention_assumed"
+   check you can answer.
+
+An explicit CR/DR ending always wins. OFX/QFX, QIF, MT940 and bank XML set "negative = money out" by
+format. The sample expense sheets are unaffected: every amount is still money out.
+
+**New formats (`ingest/formats.py`).** Each is turned into a grid, then goes through the same discovery,
+mapping, validation, review and commit as a CSV:
+- **Spreadsheet-like:** .tsv/.txt/.tab/.psv/.dat (the CSV reader already detects tabs and pipes); .xls
+  (`xlrd`, added to requirements); .ods (stdlib zip + XML, with capped repeat counts); tables inside
+  .docx and .html (stdlib; HTML `<script>`/`<style>` content ignored).
+- **Record-based:** OFX/QFX (SGML tags; ledger balance → "Closing Balance" preamble); QIF (including
+  Quicken's `4/15'25` dates); MT940 (`:61:`/`:86:`, with `:60F:`/`:62F:` as stated balances, so these
+  files reconcile); JSON (the largest list of objects anywhere, flattened, short column names when
+  unambiguous); XML (the most-repeated element with structure, e.g. ISO 20022 camt.053 `Ntry`).
+  Each record's other fields become extra columns.
+
+XML is refused if it declares a DTD or entities. Uploads get per-format signature checks (OLE magic for
+.xls, zip container and main-part checks with macro and zip-ratio limits for .ods/.docx, binary-magic
+refusal for text formats). New extraction methods: `TABLE_ROW`, `RECORD`. Reconciliation now uses the
+rows' own currency when a file doesn't declare one and all rows share it.
+
+**Not done, for time:** Claude-assisted column suggestions (opt-in, as agreed) aren't built; unrecognised
+columns are kept and typed but not given a core role automatically. The .xls reader is only tested
+indirectly: no .xls writer is available here to build a fixture. Fixed-width text, password-protected
+spreadsheets, and PDF tables by column position (§I) are still not handled. As before, every fixture is
+synthetic; the browser extension wasn't connected, so the UI changes were syntax-checked and exercised
+only through the API.
+
+449 tests passing (17 new in `tests/test_any_format.py`).

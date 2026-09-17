@@ -213,12 +213,12 @@
           <strong>Choose statement files</strong>
           <span class="muted">or drag them here</span>
         </label>
-        <input id="file-input" class="visually-hidden" type="file" multiple accept=".pdf,.csv,.xlsx,.jpg,.jpeg,.png">
+        <input id="file-input" class="visually-hidden" type="file" multiple accept=".pdf,.csv,.tsv,.txt,.xlsx,.xls,.ods,.ofx,.qfx,.qif,.sta,.mt940,.940,.json,.xml,.html,.htm,.docx,.jpg,.jpeg,.png">
         <div class="actions" style="margin-top:0">
           <label class="btn quiet" for="photo-input">Take a photo of a statement</label>
           <input id="photo-input" class="visually-hidden" type="file" accept="image/*" capture="environment">
         </div>
-        <p class="muted">You can add PDF statements, CSV or Excel (.xlsx) downloads from your bank, or a clear photo (JPG or PNG). Up to 25 MB each.</p>
+        <p class="muted">You can add PDF statements; spreadsheets (CSV, TSV, Excel .xlsx/.xls, OpenDocument .ods); bank downloads (OFX/QFX, QIF, MT940); JSON or XML exports; statements saved as Word or web pages (.docx, .html); or a clear photo (JPG or PNG). Up to 25 MB each.</p>
         <ul class="files" id="picked" aria-label="Files you chose"></ul>
         <p class="note">Your files stay on this computer. Scanned pages and photos are read by Claude through the Anthropic API; nothing is added to your statements until you say so.</p>
         <div class="actions">

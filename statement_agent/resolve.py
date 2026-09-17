@@ -357,7 +357,8 @@ def reconcile_document(doc: Document, transactions: list[Transaction]) -> None:
         doc.reconciliation_detail = "The statement doesn't state balances or totals, so there was nothing to check the rows against."
         return
 
-    home = doc.currency_declared or "INR"
+    row_currencies = {t.currency for t in transactions}
+    home = doc.currency_declared or (next(iter(row_currencies)) if len(row_currencies) == 1 else "INR")
     foreign = sorted({t.currency for t in transactions if t.currency != home})
     if foreign:
         doc.reconciliation_status = "CANNOT_CHECK"

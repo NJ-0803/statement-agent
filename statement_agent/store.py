@@ -184,6 +184,7 @@ _COLUMN_MIGRATIONS = {
         ("economic_type_auto", "TEXT"),
         ("economic_type_source", "TEXT"),
         ("economic_type_rule_id", "TEXT"),
+        ("extra_fields", "TEXT"),  # JSON object
     ],
     "correction_rules": [
         ("economic_type", "TEXT"),
@@ -281,6 +282,7 @@ class Store:
                 json.dumps(t.field_confidence) if t.field_confidence else None, t.import_job_id,
                 json.dumps(t.field_reasons) if t.field_reasons else None,
                 *(getattr(t, c) for c in _CORRECTION_COLUMNS),
+                json.dumps(t.extra_fields, ensure_ascii=False) if t.extra_fields else None,
             ))
         self.conn.executemany(
             f"""
@@ -292,8 +294,8 @@ class Store:
                 source_file_path, source_page, source_row, source_raw_text, extraction_method,
                 extraction_confidence, duplicate_of, duplicate_reason, notes,
                 value_date, reference_id, balance_after, field_confidence, import_job_id, field_reasons,
-                {", ".join(_CORRECTION_COLUMNS)}
-            ) VALUES ({",".join(["?"] * (34 + len(_CORRECTION_COLUMNS)))})
+                {", ".join(_CORRECTION_COLUMNS)}, extra_fields
+            ) VALUES ({",".join(["?"] * (35 + len(_CORRECTION_COLUMNS)))})
             """,
             rows,
         )
@@ -704,6 +706,7 @@ def _row_to_transaction(r: sqlite3.Row) -> Transaction:
         import_job_id=r["import_job_id"] if "import_job_id" in keys else None,
         field_reasons=json.loads(r["field_reasons"]) if "field_reasons" in keys and r["field_reasons"] else {},
         **{k: r[k] for k in _CORRECTION_COLUMNS if k in keys},
+        extra_fields=json.loads(r["extra_fields"]) if "extra_fields" in keys and r["extra_fields"] else {},
     )
 
 
@@ -752,6 +755,7 @@ def transaction_to_dict(t: Transaction) -> dict:
         "field_confidence": dict(t.field_confidence), "field_reasons": dict(t.field_reasons),
         "import_job_id": t.import_job_id,
         **{k: getattr(t, k) for k in _CORRECTION_COLUMNS},
+        "extra_fields": dict(t.extra_fields),
         "source": None if src is None else {
             "file_path": src.file_path, "file_hash": src.file_hash, "page": src.page, "row": src.row,
             "raw_text": src.raw_text, "extraction_method": src.extraction_method.value,
@@ -779,6 +783,7 @@ def transaction_from_dict(d: dict) -> Transaction:
         field_confidence=dict(d.get("field_confidence") or {}), import_job_id=d.get("import_job_id"),
         field_reasons=dict(d.get("field_reasons") or {}),
         **{k: d.get(k) for k in _CORRECTION_COLUMNS},
+        extra_fields=dict(d.get("extra_fields") or {}),
         source=None if src is None else SourceRef(
             file_path=src["file_path"], file_hash=src.get("file_hash", ""), page=src.get("page"), row=src.get("row"),
             raw_text=src.get("raw_text", ""), extraction_method=ExtractionMethod(src["extraction_method"]),

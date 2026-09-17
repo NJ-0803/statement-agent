@@ -50,6 +50,10 @@ class ColumnMapping:
     currency_source: str = "assumed"  # "column" | "header" | "document" | "amount_cells" | "user" | "assumed"
     decimal_separator: str = "."
     excel_serial_dates: bool = False
+    # For a single signed amount column: does a minus sign mean money IN (expense sheets, where spending is
+    # written as a positive number) or money OUT (bank exports)? Explicit CR/DR endings always win.
+    negative_means: str = "CREDIT"
+    negative_means_source: str = "default"  # "default" | "evidence" | "format" | "user" | "assumed"
     confidence: dict[str, float] = field(default_factory=dict)
     evidence: dict[str, list[str]] = field(default_factory=dict)
     ambiguities: list[str] = field(default_factory=list)
@@ -280,6 +284,7 @@ def infer_mapping(table: TableCandidate, *, profile: dict | None = None) -> Colu
     _settle_currency(mapping, table)
     _settle_decimal_separator(mapping, table)
     _settle_date_order(mapping, table)
+    _settle_sign_convention(mapping, table)
     return mapping
 
 
@@ -337,6 +342,66 @@ def _settle_decimal_separator(mapping: ColumnMapping, table: TableCandidate) -> 
         mapping.evidence.setdefault("_file", []).append("Amounts use a comma for decimals (e.g. 1.234,56)")
     elif comma and dot:
         mapping.ambiguities.append("Some amounts use '.' for decimals and others use ',' — I can't tell which is right.")
+
+
+_INCOME_WORDS_RE = re.compile(
+    r"salary|payroll|paycheck|wages|pension|dividend|interest|refund|cashback|gehalt|lohn|gutschrift|erstattung|"
+    r"salaire|remboursement|nomina|reembolso|stipendio|rimborso|वेतन|refund",
+    re.IGNORECASE,
+)
+
+
+def _settle_sign_convention(mapping: ColumnMapping, table: TableCandidate) -> None:
+    """Decides what a minus sign means in a single signed amount column, from evidence in the file:
+    rows that are clearly money in (salary, refund, interest…) show which sign money in carries; failing
+    that, the sign most amounts carry is spending. If neither settles it, the default stands but is marked
+    'assumed', which the review step turns into a check."""
+    if mapping.negative_means_source in ("user", "format") or mapping.amount_model != AmountModel.SIGNED.value:
+        return
+    j = mapping.roles.get("amount")
+    if j is None:
+        return
+    desc_j = mapping.roles.get("description")
+    negatives = positives = income_neg = income_pos = 0
+    for _, cells in table.rows[:_SAMPLE]:
+        v = cells[j].strip() if j < len(cells) else ""
+        if not v or not looks_like_amount(v) or re.search(r"(?:CR|DR)\s*$", v, re.IGNORECASE):
+            continue
+        neg = v.startswith(("-", "(")) or v.endswith("-")
+        negatives += neg
+        positives += not neg
+        text = " ".join(c for k, c in enumerate(cells) if k != j and c) if desc_j is None else (cells[desc_j] if desc_j < len(cells) else "")
+        if _INCOME_WORDS_RE.search(text):
+            income_neg += neg
+            income_pos += not neg
+    notes = mapping.evidence.setdefault("_file", [])
+    if not negatives:
+        mapping.negative_means_source = "evidence"
+        notes.append("No amount has a minus sign; amounts are money out unless marked otherwise")
+        return
+    if income_pos > income_neg:
+        mapping.negative_means, mapping.negative_means_source = "DEBIT", "evidence"
+        notes.append("Salary/refund-type rows are positive, so a minus sign means money out")
+    elif income_neg > income_pos:
+        mapping.negative_means, mapping.negative_means_source = "CREDIT", "evidence"
+        notes.append("Salary/refund-type rows are negative, so a minus sign means money in")
+    elif negatives >= 2 * positives:
+        mapping.negative_means, mapping.negative_means_source = "DEBIT", "evidence"
+        notes.append("Most amounts are negative, so a minus sign means money out")
+    elif positives >= 2 * negatives:
+        mapping.negative_means, mapping.negative_means_source = "CREDIT", "evidence"
+        notes.append("Most amounts are positive spending, so a minus sign means money in (a refund)")
+    else:
+        mapping.negative_means_source = "assumed"
+
+
+def set_format_sign_convention(mapping: ColumnMapping, fmt: str) -> None:
+    """Bank data formats define the sign themselves: in OFX, QIF, MT940 (as converted) and ISO 20022,
+    a negative amount is money out."""
+    if mapping.negative_means_source == "user":
+        return
+    mapping.negative_means, mapping.negative_means_source = "DEBIT", "format"
+    mapping.evidence.setdefault("_file", []).append(f"In {fmt} files a minus sign means money out")
 
 
 def _settle_date_order(mapping: ColumnMapping, table: TableCandidate) -> None:
@@ -405,4 +470,12 @@ def apply_user_mapping(table: TableCandidate, base: ColumnMapping, data: dict) -
         mapping.decimal_separator = decimal
         mapping.ambiguities = [a for a in mapping.ambiguities if "decimals" not in a]
     _settle_date_order(mapping, table)
+    negative = data.get("negative_means", base.negative_means if base.negative_means_source in ("user", "format") else None)
+    if negative:
+        if negative not in ("CREDIT", "DEBIT"):
+            raise MappingError("negative_means must be CREDIT or DEBIT")
+        mapping.negative_means = negative
+        mapping.negative_means_source = "user" if "negative_means" in data else base.negative_means_source
+    else:
+        _settle_sign_convention(mapping, table)
     return mapping

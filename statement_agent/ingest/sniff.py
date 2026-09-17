@@ -250,9 +250,13 @@ def sniff_csv(path: str) -> SniffResult:
 
 
 def sniff_xlsx(path: str) -> SniffResult:
+    return sniff_grids("xlsx", read_xlsx_grids(path))
+
+
+def sniff_grids(kind: str, grids) -> SniffResult:
     candidates: list[TableCandidate] = []
     sheet_info = []
-    for name, state, grid in read_xlsx_grids(path):
+    for name, state, grid in grids:
         sheet_info.append({"name": name, "state": state, "rows": len(grid)})
         for cand in find_tables(grid, sheet=name):
             if state != "visible":
@@ -260,12 +264,19 @@ def sniff_xlsx(path: str) -> SniffResult:
                 cand.evidence.append(f"sheet is {state} in the workbook")
             candidates.append(cand)
     candidates.sort(key=lambda c: -c.score)
-    evidence = [f"Workbook has {len(sheet_info)} sheet(s): {', '.join(s['name'] for s in sheet_info)}"]
-    return SniffResult(kind="xlsx", candidates=candidates, sheets=sheet_info, evidence=evidence)
+    if kind == "xlsx" or len(sheet_info) > 1:
+        evidence = [f"File has {len(sheet_info)} sheet(s) or table(s): {', '.join(s['name'] for s in sheet_info)}"]
+    else:
+        evidence = [f"Read as a {kind.upper()} file"]
+    return SniffResult(kind=kind, candidates=candidates, sheets=sheet_info, evidence=evidence)
 
 
 def sniff_file(path: str) -> SniffResult:
     ext = os.path.splitext(path)[1].lower()
     if ext == ".xlsx":
         return sniff_xlsx(path)
-    return sniff_csv(path)
+    from .formats import TEXT_TABLE_EXTENSIONS, read_sheets
+
+    if ext in (".csv", *TEXT_TABLE_EXTENSIONS) or not ext:
+        return sniff_csv(path)
+    return sniff_grids(ext.lstrip("."), read_sheets(path, ext))
