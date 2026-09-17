@@ -118,3 +118,94 @@ class Transaction:
     duplicate_reason: str | None = None
 
     notes: str = ""
+
+    value_date: date | None = None  # the bank's value/effective date, kept separate from transaction_date —
+    # never collapsed into it at ingestion (a statement's "Value Dt" and "Txn Date" can differ by days)
+    reference_id: str | None = None  # cheque/UTR/reference number, when the source declares one
+    balance_after: Decimal | None = None  # the source's own running balance after this row, if stated
+    field_confidence: dict[str, float] = field(default_factory=dict)  # per-field: "date", "amount",
+    # "direction", "currency" — 1.0 = read directly or confirmed by the user; lower = inferred
+    import_job_id: str | None = None  # which ImportJob committed this row — what makes undo-by-import possible
+
+
+# ---------------------------------------------------------------------------
+# Staged imports — upload -> analyze -> map -> review -> commit (-> rollback)
+# ---------------------------------------------------------------------------
+
+class ImportState(str, Enum):
+    UPLOADED = "uploaded"
+    ANALYZING = "analyzing"
+    NEEDS_MAPPING = "needs_mapping"  # a required column (date, or how amounts are laid out) isn't certain
+    NEEDS_REVIEW = "needs_review"  # mapping is fine, but some rows/assumptions need the user's check
+    READY = "ready"  # nothing unresolved — can be committed
+    COMMITTED = "committed"
+    FAILED = "failed"  # nothing usable came out (including zero transactions) — never committed
+    ROLLED_BACK = "rolled_back"
+    DUPLICATE = "duplicate"  # these exact file bytes are already in the ledger
+    CANCELLED = "cancelled"
+
+
+TERMINAL_IMPORT_STATES = {
+    ImportState.COMMITTED, ImportState.FAILED, ImportState.ROLLED_BACK, ImportState.DUPLICATE, ImportState.CANCELLED,
+}
+
+
+class AmountModel(str, Enum):
+    """How a tabular source lays out money — represented explicitly rather than forcing
+    every file through a single signed "amount" column."""
+
+    SIGNED = "signed"  # one amount column; direction from its sign / parentheses / CR-DR suffix
+    DEBIT_CREDIT = "debit_credit"  # separate money-out and money-in columns, exactly one filled per row
+    AMOUNT_WITH_MARKER = "amount_with_marker"  # amount plus a Dr/Cr (or debit/credit) type column
+    AMOUNT_WITH_BALANCE = "amount_with_balance"  # unsigned amount; direction only from validated balance changes
+
+
+class IssueSeverity(str, Enum):
+    BLOCKING = "blocking"  # can't commit until fixed (new mapping) or the row is explicitly left out
+    CHECK = "check"  # can commit once the user has acknowledged it
+    INFO = "info"  # shown, never blocks
+
+
+@dataclass
+class ValidationIssue:
+    issue_id: str  # deterministic (rule + location), so an acknowledgement survives re-analysis
+    rule: str
+    severity: IssueSeverity
+    message: str  # plain language, shown as-is to the user
+    suggested_action: str
+    target: str | None = None  # the row/transaction key this is about ("row:12" / "txn:<id>"), None = whole file
+    field: str | None = None
+    evidence: str = ""  # the source cells/text the issue is about
+    resolution: str | None = None  # "excluded" | "acknowledged" | None
+
+
+@dataclass
+class RawTransactionCandidate:
+    """One source row, preserved before normalization. Every row ends in exactly one
+    outcome — a transaction, an explicitly ignored non-transaction row, or an issue —
+    so no row can be silently lost."""
+
+    key: str  # "row:<n>" for tabular sources
+    source_row: int
+    cells: dict[str, str]
+    outcome: str  # "transaction" | "ignored" | "issue"
+    reason: str = ""
+    transaction_id: str | None = None
+
+
+@dataclass
+class ImportJob:
+    job_id: str
+    state: ImportState
+    original_filename: str
+    stored_path: str
+    owner: str = "local"
+    file_hash: str | None = None
+    file_kind: str | None = None  # "tabular" | "pdf" | "image"
+    parser_version: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+    error_summary: str | None = None
+    document_id: str | None = None
+    transaction_count: int = 0
+    mapping_fingerprint: str | None = None

@@ -366,3 +366,46 @@ of these are scoped or scheduled, just recorded so they don't get re-derived fro
   own, separate from `aggregate_spending`'s `convert_to`) — for a one-off "how much is $120 in INR"
   question that isn't about a transaction total. `fx.convert_amount` already exists and is tested;
   this would just be a thin tool-schema wrapper around it, not new logic.
+
+---
+
+## I. From the generalization & production roadmap (Sept 2026) — what Phase 0 did not cover
+
+`DECISIONS.md` §33 built the roadmap's Phase 0 (staged, reviewable imports) and its §10 code backlog.
+Everything below is from the same roadmap and is **not** built. Several items are legal, operational or
+research work that can't be done in code at all.
+
+**Production foundation (roadmap Phase 2)**
+- No accounts, authentication (passkeys/OTP), RBAC or session revocation. Isolation between people is still
+  only the `--client` one-ledger-per-client file (§31); `ImportJob.owner` is always `"local"`.
+- No object storage, KMS-managed encryption at rest, quarantine bucket, WAF, or retention/deletion policy.
+  Uploads sit unencrypted in `uploaded_documents/` (gitignored); rollback and cancel delete that import's file.
+- Reading runs on an in-process thread pool, not isolated queue workers with CPU/memory/time limits, bounded
+  retries or a dead-letter path. There's a manual retry, and jobs interrupted by a crash are marked failed.
+- No malware scanning or content disarm. Uploads get signature, macro and zip-ratio checks only.
+- No observability stack, SLOs, rate limits, load tests, backups/restore drills or penetration test.
+
+**Quality (roadmap Phase 1)**
+- Fixtures are synthetic. There's no consented, de-identified corpus of real bank exports, no golden
+  benchmark separate from the development fixtures, and no per-format accuracy dashboard.
+- PDFs still use the date-at-start / amount-at-end row rule. There's no password-protected or rotated-page
+  handling, and reconciliation happens only when a statement states balances.
+- Merged cells in XLSX are read as blank (openpyxl read-only mode); formulas use cached values only.
+- Header vocabulary is English. A German or Hindi header goes to needs_mapping, which is honest but
+  unhelpful.
+- Category corrections aren't remembered yet. Only column mappings are.
+- No source viewer that opens the original page or row next to an answer. "Why?" shows the cited rows'
+  extracted text.
+
+**People and product (roadmap §3, Phase 3)**
+- No WCAG 2.2 AA audit with screen readers, and no usability sessions with older adults.
+- No Hindi or regional language, text-to-speech or voice input.
+- No trusted-person sharing or alerts.
+- No recurring-payment, refund/reversal or transfer linking (still `NOT_IMPLEMENTED.md` §A).
+- No separate `Account` record with masked identity, and no `booking_date` distinct from `transaction_date`.
+
+**Legal and regulatory (roadmap §5.2–5.3) — needs counsel, not code**
+- DPDP Act / DPDP Rules 2025 notice, consent, retention, breach and grievance design.
+- Account Aggregator / FIU path.
+- PCI DSS scope: PAN-like values are not masked at intake.
+- Confirming the Anthropic data-retention terms of the deployed account.

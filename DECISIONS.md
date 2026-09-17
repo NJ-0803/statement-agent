@@ -1501,3 +1501,104 @@ for Platinum Card / Checking / Silver Card), and 46/46 Paycheck rows correctly e
 `tests/test_tools.py::TestAccountFilterAndGrouping`, two `tests/test_loop.py::TestDispatchAccountWiring`
 tests confirming `account` actually reaches the tool functions from `tool_input`, not just the schema).
 310/310 passing.
+
+---
+
+## 33. Generalized, staged imports — Phase 0 of the generalization roadmap
+
+Source: an external repository audit and roadmap (*Statement-Agent: Generalization, senior-friendly UX, and
+production roadmap*, 8 Sept 2026). Its core diagnosis was checked against the code before anything was
+built, and every point held: CSV and XLSX both assumed row 1 is the header; column names were matched by
+exact alias after lowercasing; exactly one signed amount column was required; XLSX read only the active
+sheet; a file that yielded zero transactions was still reported — and persisted — as `ingested`; and an
+upload was parsed and written to the ledger inside the request, with no preview and no undo. Its central
+recommendation is the one followed here: **don't grow the alias list, and don't let a model rewrite
+transactions — put an adaptive, reviewable import layer in front of the deterministic core.**
+
+**What was built (the roadmap's Phase 0 and its §10 code backlog):**
+
+- `ingest/sniff.py` — structure discovery. Encoding (BOMs, BOM-less UTF-16 by NUL pattern, UTF-8,
+  Windows-1252), delimiter (the one most rows agree on), candidate header rows scored within the first 50
+  rows (named columns + transaction-like rows beneath), every sheet of a workbook ranked (hidden sheets
+  down-weighted), duplicate header names renamed and reported. Returns ranked candidates with evidence,
+  never one opaque guess.
+- `ingest/vocab.py` + `ingest/mapping.py` — column-role inference. 13 roles (date, value date, description,
+  amount, money out, money in, Dr/Cr marker, balance, currency, reference, category, account, notes), each
+  column scored on header meaning (normalized tokens, camelCase split, currency codes inside a header pulled
+  out as evidence) *and* value shape. Any ambiguity — a close runner-up for a required role, a header that
+  only partly matches, a headerless file judged from values alone, mixed decimal separators — becomes a
+  plain-language `ambiguities` entry, and an ambiguous mapping is never applied automatically.
+- Four explicit amount layouts (`schema.AmountModel`): signed amount; separate debit/credit (exactly one per
+  row, else a blocking issue); amount + Dr/Cr marker (a disagreeing sign is a check); amount + running
+  balance, where direction is derived **only** from a balance step that validates — the first row with no
+  stated opening balance is asked, not guessed. Newest-first statements are handled by trying both orders
+  and keeping the one where more balance steps check out, rather than trusting dates that are often equal.
+- `ingest/tabular.py` — deterministic normalization and validation. **Every source row gets exactly one
+  outcome**: transaction, explicitly ignored (blank, repeated header, opening/closing/total line, wrapped
+  narration appended to the row above, left out by the user), or a validation issue. Balance continuity is
+  checked row by row. A missing currency is now a *check* the user confirms rather than a silent INR
+  default; so is a DD/MM-vs-MM/DD reading with no disambiguating date. Two-digit years, dotted dates,
+  `01-Apr-25`, Excel serial dates and decimal-comma amounts are handled. Originals are kept on every
+  candidate and SourceRef; `value_date`, `reference_id`, `balance_after` and per-field confidence are new
+  Transaction fields.
+- `schema.py` / `store.py` — `ImportJob` (states: uploaded, analyzing, needs_mapping, needs_review, ready,
+  committed, failed, rolled_back, plus `duplicate` and `cancelled`), `ValidationIssue`,
+  `RawTransactionCandidate`, `mapping_profiles` keyed by a header-layout fingerprint. `commit_import` writes
+  document + transactions + cross-document duplicate flags + job state + mapping profile in **one** SQLite
+  transaction, and refuses zero transactions outright. `rollback_import` removes exactly one import's rows
+  and clears any other import's duplicate flag that pointed at them.
+- `ingest/pipeline.py` — the job lifecycle (`analyze_import`, `update_mapping`, `update_review`,
+  `commit_import`, `rollback_import`, `cancel_import`). Spreadsheet analysis is recomputed from the stored
+  file on every change; PDF/image extraction runs once and is cached in the job, because vision OCR costs
+  money. Commit always recomputes rather than trusting an earlier preview.
+- `web/app.py` — the job API from the roadmap's §4, reading on a background worker with the browser
+  polling, JSON errors for every `/api/` failure (including 404/405/413), a real **per-file** 25 MB limit,
+  file-signature checks (a renamed executable is refused), XLSX container checks (macros, zip-bomb ratio),
+  and a CSRF token on every state-changing call — on a localhost server, without one any website open in
+  the same browser could post files or burn API credits through `/api/ask` (a multipart form POST needs no
+  CORS preflight). Jobs left `analyzing` by a dead process are marked failed on startup.
+- `web/templates/index.html` + `web/static/app.js` — the four-step flow (Add files → Check what I found →
+  Fix highlighted items → Done), replacing the chat-first dark terminal UI. Built to the roadmap's §3 rules:
+  18px base text that scales with zoom, sentence case, 48px targets, visible labels, status in words not
+  color alone, light and dark palettes chosen for AA contrast, a polite live region for progress, no
+  dialogs (destructive actions confirm with a second click), one issue at a time with Back / Skip / Undo,
+  a "Your statements" list where any import can be undone, and a "Why?" table under every answer showing
+  the cited source rows (`/api/ask` now returns them). Nothing is inserted with `innerHTML`.
+- CLI: `ingest` uses the same stages non-interactively — commits only when the mapping is certain, leaves
+  out rows with blocking problems (reported, as rejected rows always were), accepts disclosed checks
+  (reported as warnings), and never commits a zero-row file. New `imports` and `rollback JOB_ID` commands.
+
+**Behavior changes that deliberately broke old tests (updated, not worked around):**
+
+- A scanned PDF ingested with vision off is now `no_transactions`, not `ingested` with 0 rows, and no
+  document row is written — so a no-vision `dataset_public/` ingest has 6 documents, not 7. The cost: the
+  agent's `list_documents` no longer sees that unreadable file; the import job still records it.
+- `malformed_missing_headers.csv` (no header row) is now `needs_mapping`: its columns can be proposed from
+  their values, but only a person can confirm them.
+- `/api/upload` is removed, replaced by `/api/imports` — its only caller was this app's own page.
+
+**Deliberate deviations from the roadmap, and why:**
+
+- `POST /api/imports` takes the files in the same request instead of create-then-upload: one local server,
+  no object storage to hand out upload URLs for.
+- Uploads are stored as `uploaded_documents/<server-generated job id>/<sanitized original name>` rather than
+  a random filename: the agent's `list_documents` finds "the Cobalt statement" by filename, and the
+  per-import directory already removes the collision and traversal risks a generated name exists for.
+- The CLI path accepts disclosed checks automatically. It's non-interactive by nature; the browser path is
+  where review happens.
+
+**Real bugs the new tests found in this build before it shipped** (all fixed): a header repeated mid-file
+(page breaks in an export) outscored the real header and the table started too late; the same repeated
+header then counted as a *value* of its own column, so a withdrawals-only statement's empty Deposit column
+failed its value-shape check and the file stopped at needs_mapping; and "Opening Balance: 6,000.00" in a
+single preamble cell wasn't read, which would have made every newest-first balance-only file ask about its
+first row.
+
+**Honest scope note:** the bank-export fixtures are synthetic, modeled on common Indian export layouts; no
+real bank files were available, so this proves the mechanisms, not compatibility with any specific bank.
+Accessibility was built to the guidelines but has not been audited with assistive technology or tested with
+older users. Everything else the roadmap covers — authentication, isolation, storage, legal, language,
+family-safety — is listed in `NOT_IMPLEMENTED.md` §I.
+
+355 tests passing (310 before; 35 in `tests/test_generalized_import.py`, and `tests/test_web.py`'s upload
+tests rewritten and extended for the job API, CSRF, signatures, size limits and sources).

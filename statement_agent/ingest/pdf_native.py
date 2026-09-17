@@ -221,6 +221,8 @@ def parse_pdf_native(path: str) -> PdfParseResult:
                     extraction_method=ExtractionMethod.NATIVE_TEXT,
                     extraction_confidence=1.0,
                 ),
+                # recorded so a staged import can apply a user-confirmed currency to exactly these rows
+                field_confidence={"currency": 0.5 if parsed_amount.currency_inferred else 1.0},
             )
             if parsed_date.confidence < 1.0:
                 txn.notes = f"date assumption: {parsed_date.assumption}"

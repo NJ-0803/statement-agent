@@ -22,7 +22,9 @@ class TestFullFolderIngestion:
             reports = ingest_folder(DATASET, store, attempt_vision=False)
             statuses = {r.file_path: r.status for r in reports}
             ingested = [s for s in statuses.values() if s == "ingested"]
-            assert len(ingested) == 7  # 5 PDFs + 2 CSVs
+            assert len(ingested) == 6  # 4 native PDFs + 2 CSVs; the scanned PDF yields 0 rows without vision
+            scanned = next(s for p, s in statuses.items() if "axis_bank" in p)
+            assert scanned == "no_transactions"  # a zero-row file is never reported (or committed) as ingested
 
             readme_reports = [r for r in reports if r.file_path.endswith("README.md")]
             assert readme_reports and readme_reports[0].status == "skipped_unsupported"
@@ -39,7 +41,8 @@ class TestFullFolderIngestion:
             count_second = len(store.all_transactions())
 
             assert count_first == count_second
-            assert all(r.status in ("skipped_duplicate", "skipped_unsupported") for r in reports)
+            # the scanned PDF was never committed, so it's simply re-attempted (and still yields nothing)
+            assert all(r.status in ("skipped_duplicate", "skipped_unsupported", "no_transactions") for r in reports)
         finally:
             store.close()
             os.remove(path)
@@ -49,9 +52,10 @@ class TestFullFolderIngestion:
         try:
             reports = ingest_folder(DATASET, store, attempt_vision=False)
             scanned = next(r for r in reports if "axis_bank" in r.file_path)
-            assert scanned.status == "ingested"  # ingestion succeeds even though it yields 0 transactions
+            assert scanned.status == "no_transactions"  # reported honestly, not as a successful ingest
             assert scanned.transaction_count == 0
             assert any("vision was disabled" in w for w in scanned.warnings)
+            assert not any("axis_bank" in d["file_path"] for d in store.all_documents_as_dicts())
         finally:
             store.close()
             os.remove(path)
@@ -99,9 +103,10 @@ class TestXlsxAndImageIngestion:
             store, path = _fresh_store()
             try:
                 reports = ingest_folder(tmp, store, attempt_vision=False)
-                assert reports[0].status == "ingested"
+                assert reports[0].status == "no_transactions"
                 assert reports[0].transaction_count == 0
                 assert any("vision was disabled" in w for w in reports[0].warnings)
+                assert store.all_documents_as_dicts() == []
             finally:
                 store.close()
                 os.remove(path)
@@ -145,7 +150,8 @@ class TestSingleBadFileDoesNotAbortFolder:
                 good = next(r for r in reports if "personal_expenses" in r.file_path)
                 bad = next(r for r in reports if "malformed_missing_headers" in r.file_path)
                 assert good.status == "ingested" and good.transaction_count == 6
-                assert bad.status == "ingested" and bad.transaction_count == 0  # rejected gracefully, not crashed
+                # headerless: columns can only be guessed from values, so it waits for a person to confirm
+                assert bad.status == "needs_mapping" and bad.transaction_count == 0
             finally:
                 store.close()
                 os.remove(path)

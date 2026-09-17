@@ -64,12 +64,33 @@ it's standing behind, any caveats, and how many transactions it cited as sources
 python -m statement_agent.cli serve
 ```
 
-Opens on `http://127.0.0.1:5050` — a single-page dark-themed chat interface with example questions,
-a live status bar (ledger stats, whether the API key is set), and each answer's verification badge,
-amounts, caveats, and execution trace, same as the CLI. `--port` to use a different port. `serve` is a
-thin wrapper over the exact same `Store`/`run_agent()` the CLI uses — no separate logic to trust.
-An "Add statements" bar lets you upload PDFs/CSVs/XLSX/images directly from the browser and ingest them
-into the running ledger, instead of only via `cli ingest` from the terminal — see `DECISIONS.md` §26.
+Opens on `http://127.0.0.1:5050` with three areas:
+
+- **Add statements** — a four-step guided flow: *Add files → Check what I found → Fix highlighted items →
+  Done*. Files are read into a staged import that is **not** in your ledger yet. You see what was found
+  (period, money in/out, how each column was read, rows that weren't used and why), can correct the column
+  choices, and deal with anything uncertain one item at a time: confirm a currency, confirm a date format,
+  leave a row out, or say whether a row is money in or out. Only then is the import added, in one atomic
+  step.
+- **Your statements** — every import, newest first. Any added import can be undone without touching the
+  others.
+- **Ask a question** — the same verified agent as the CLI. "Why?" under each answer lists the exact source
+  rows it used.
+
+`--port` to use a different port. The server is a thin wrapper over the same `Store`, import pipeline and
+`run_agent()` the CLI uses. See `DECISIONS.md` §33 for the import design and `NOT_IMPLEMENTED.md` §I for
+what it deliberately doesn't do yet (no accounts or authentication — it's a local, single-user tool).
+
+**Undo an import from the terminal:**
+
+```bash
+python -m statement_agent.cli imports            # list import jobs and their ids
+python -m statement_agent.cli rollback JOB_ID    # remove exactly that import's transactions
+```
+
+`cli ingest` uses the same staged pipeline non-interactively. It adds a file only when its columns are read
+with certainty and it produced at least one transaction. Anything else is listed as *not added*, and
+nothing is written for it.
 
 ## Running the tests
 
@@ -77,7 +98,8 @@ into the running ledger, instead of only via `cli ingest` from the terminal — 
 python -m pytest tests/ -v
 ```
 
-310 tests, all runnable offline with no API key — they cover normalization (currency/date parsing),
+355 tests, all runnable offline with no API key — they cover normalization (currency/date parsing),
+structure detection and column-role inference for unfamiliar bank exports, staged import commit/rollback,
 PDF/CSV extraction (including the injection-defense and duplicate-detection tests described below),
 resolution (categorization, duplicates, reconciliation, anomaly detection), the query/aggregation
 tools, and the answer verifier's grounding/provenance checks. See `DECISIONS.md` §11 for the three real

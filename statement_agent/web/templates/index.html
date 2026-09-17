@@ -3,454 +3,259 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="csrf-token" content="{{ csrf_token }}">
 <title>Statement Intelligence Agent</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
   /*
-   * Same instrument-panel language as naap: dark ground, hairline panels,
-   * Chakra Petch for anything technical/labeled, one accent color, and
-   * status conveyed through the same mint / amber / red reservation —
-   * mint = clean, amber = caveats, red = insufficient / error.
+   * Calm and readable by default, for everyone — not a separate "simple mode".
+   * Large body text, one clear primary action per step, sentence case, visible
+   * labels, 48px targets, status always given in words (never color alone), and
+   * WCAG 2.2 AA contrast in both light and dark. No web fonts: nothing leaves
+   * this machine just to draw text.
    */
   :root {
-    --ground: #0a0d14;
-    --panel: #0f131c;
-    --panel-2: #131824;
-    --line: #1c2431;
-    --line-soft: #161d28;
-
-    --ink: #edf1f7;
-    --dim: #8296ad;
-    --faint: #5b6d83;
-
-    --red: #ff2e4c;
-    --red-dim: rgba(255, 46, 76, 0.14);
-    --mint: #4ade80;
-    --mint-dim: rgba(74, 222, 128, 0.14);
-    --amber: #ffa23a;
-    --amber-dim: rgba(255, 162, 58, 0.14);
-
-    --display: "Chakra Petch", ui-monospace, "SF Mono", Menlo, monospace;
-    --body: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --bg: #f6f5f1;
+    --surface: #ffffff;
+    --surface-2: #efede7;
+    --ink: #1b1c1e;
+    --muted: #4f535a;
+    --line: #cfccc3;
+    --accent: #1d5a86;
+    --accent-ink: #ffffff;
+    --accent-soft: #e3eef6;
+    --good: #1d6a39;
+    --good-soft: #e4f2e8;
+    --warn: #7f4d00;
+    --warn-soft: #fbf0dc;
+    --bad: #9f2328;
+    --bad-soft: #f9e4e4;
+    --focus: #b0540b;
+    --radius: 12px;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141517; --surface: #1d1f22; --surface-2: #26292d; --ink: #f1f0ec; --muted: #b9bcc2;
+      --line: #3d4147; --accent: #8cc2ea; --accent-ink: #0d1b26; --accent-soft: #1f3445;
+      --good: #8fd6a6; --good-soft: #1b3325; --warn: #f2c27a; --warn-soft: #3a2c14;
+      --bad: #f3a3a6; --bad-soft: #3d1f21; --focus: #ffb870; color-scheme: dark;
+    }
   }
   * { box-sizing: border-box; }
+  html { font-size: 112.5%; } /* 18px, scales with browser zoom and user font settings */
   body {
-    margin: 0; padding: 0;
-    font-family: var(--body);
-    background: var(--ground); color: var(--ink);
-    display: flex; flex-direction: column; height: 100vh;
-    -webkit-font-smoothing: antialiased;
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", "Noto Sans Devanagari", sans-serif;
+    line-height: 1.55;
   }
-  header {
-    padding: 22px 28px 18px; border-bottom: 1px solid var(--line); background: var(--panel);
-    display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 8px;
+  .wrap { max-width: 52rem; margin: 0 auto; padding-inline: 1rem; }
+  a { color: var(--accent); }
+  :focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; border-radius: 6px; }
+  .visually-hidden { position: absolute !important; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  [hidden] { display: none !important; }
+
+  header.site { background: var(--surface); border-bottom: 1px solid var(--line); }
+  header.site .wrap { padding-block: 1.1rem 0.6rem; }
+  header.site h1 { margin: 0; font-size: 1.45rem; line-height: 1.25; }
+  header.site p { margin: 0.25rem 0 0.8rem; color: var(--muted); }
+  nav.tabs { display: flex; gap: 0.4rem; flex-wrap: wrap; }
+  nav.tabs button {
+    min-height: 48px; padding: 0.5rem 1rem; font: inherit; font-weight: 600; color: var(--muted);
+    background: transparent; border: 0; border-bottom: 3px solid transparent; cursor: pointer;
   }
-  header h1 {
-    font-family: var(--display); font-size: 19px; margin: 0; font-weight: 700;
-    letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink);
+  nav.tabs button[aria-current="page"] { color: var(--ink); border-bottom-color: var(--accent); }
+
+  main { padding-block: 1.5rem 3rem; }
+  h2 { font-size: 1.3rem; line-height: 1.3; margin: 0 0 0.5rem; }
+  h3 { font-size: 1.1rem; margin: 1.25rem 0 0.5rem; }
+  p { margin: 0 0 0.8rem; }
+  .muted { color: var(--muted); }
+  .panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 1.25rem; }
+  .stack > * + * { margin-top: 1rem; }
+
+  ol.steps { list-style: none; display: flex; flex-wrap: wrap; gap: 0.5rem; padding: 0; margin: 0 0 1.25rem; counter-reset: step; }
+  ol.steps li {
+    counter-increment: step; display: flex; align-items: center; gap: 0.45rem; padding: 0.3rem 0.8rem 0.3rem 0.35rem;
+    border-radius: 999px; background: var(--surface-2); color: var(--muted); font-size: 0.9rem; font-weight: 600;
   }
-  header h1 .mark { color: var(--red); }
-  header p { margin: 6px 0 0; font-size: 12px; color: var(--faint); max-width: 560px; line-height: 1.5; }
-  #status-bar {
-    font-family: var(--display); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;
-    color: var(--dim); padding: 10px 28px; background: var(--panel-2);
-    border-bottom: 1px solid var(--line);
+  ol.steps li::before {
+    content: counter(step); display: inline-grid; place-items: center; width: 1.7rem; height: 1.7rem;
+    border-radius: 50%; background: var(--surface); border: 1px solid var(--line);
   }
-  #status-bar.error { color: var(--red); }
-  #chat {
-    flex: 1; overflow-y: auto; padding: 26px; display: flex; flex-direction: column; gap: 18px;
-    max-width: 800px; margin: 0 auto; width: 100%;
+  ol.steps li[aria-current="step"] { background: var(--accent-soft); color: var(--ink); }
+  ol.steps li[aria-current="step"]::before { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  ol.steps li.done::before { content: "✓"; }
+
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 0.4rem; min-height: 48px;
+    padding: 0.55rem 1.2rem; font: inherit; font-weight: 600; border-radius: 10px; cursor: pointer;
+    border: 2px solid var(--accent); background: var(--surface); color: var(--accent); text-decoration: none;
   }
-  .row { display: flex; }
-  .row.user { justify-content: flex-end; }
-  .bubble-user {
-    background: var(--red-dim); color: var(--ink); border: 1px solid var(--red);
-    padding: 10px 15px; border-radius: 2px; max-width: 75%;
-    font-size: 14px; line-height: 1.5;
+  .btn.primary { background: var(--accent); color: var(--accent-ink); }
+  .btn.quiet { border-color: var(--line); color: var(--ink); }
+  .btn.danger { border-color: var(--bad); color: var(--bad); }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .actions { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 1.25rem; }
+
+  .dropzone {
+    display: block; border: 2px dashed var(--line); border-radius: var(--radius); padding: 1.75rem 1rem;
+    text-align: center; background: var(--surface); cursor: pointer;
   }
-  .card {
-    background: var(--panel); border: 1px solid var(--line); border-radius: 2px;
-    padding: 16px 18px; max-width: 90%; font-size: 14px; line-height: 1.6; color: var(--ink);
+  .dropzone.over { border-color: var(--accent); background: var(--accent-soft); }
+  .dropzone strong { display: block; font-size: 1.1rem; margin-bottom: 0.3rem; }
+  ul.files { list-style: none; padding: 0; margin: 1rem 0 0; }
+  ul.files li {
+    display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; flex-wrap: wrap;
+    padding: 0.55rem 0.8rem; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); margin-top: 0.5rem;
   }
-  .badge {
-    display: inline-block; font-family: var(--display); font-size: 10.5px; font-weight: 600;
-    letter-spacing: 0.16em; text-transform: uppercase;
-    padding: 4px 10px; border: 1px solid; margin-bottom: 10px;
+  .note { font-size: 0.92rem; color: var(--muted); border-left: 4px solid var(--line); padding-left: 0.8rem; }
+
+  .status { display: inline-flex; align-items: center; gap: 0.35rem; font-weight: 600; font-size: 0.92rem; padding: 0.15rem 0.6rem; border-radius: 999px; }
+  .status.good { background: var(--good-soft); color: var(--good); }
+  .status.warn { background: var(--warn-soft); color: var(--warn); }
+  .status.bad { background: var(--bad-soft); color: var(--bad); }
+  .status.info { background: var(--surface-2); color: var(--muted); }
+
+  .headline { font-size: 1.15rem; font-weight: 600; }
+  dl.facts { display: grid; grid-template-columns: max-content 1fr; gap: 0.35rem 1rem; margin: 0.5rem 0 0; }
+  dl.facts dt { color: var(--muted); }
+  dl.facts dd { margin: 0; }
+
+  .table-scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; font-size: 0.92rem; font-variant-numeric: tabular-nums; }
+  th, td { padding: 0.5rem 0.65rem; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+  th { background: var(--surface-2); font-weight: 600; }
+  tr:last-child td { border-bottom: 0; }
+  td.num { text-align: right; white-space: nowrap; }
+  select, input[type="text"] {
+    font: inherit; min-height: 44px; padding: 0.35rem 0.5rem; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--surface); color: var(--ink); max-width: 100%;
   }
-  .badge.VERIFIED { background: var(--mint-dim); color: var(--mint); border-color: var(--mint); }
-  .badge.VERIFIED_WITH_CAVEATS { background: var(--amber-dim); color: var(--amber); border-color: var(--amber); }
-  .badge.INSUFFICIENT_INFORMATION { background: var(--red-dim); color: var(--red); border-color: var(--red); }
-  .badge.ERROR { background: var(--red-dim); color: var(--red); border-color: var(--red); }
-  .answer-text { white-space: pre-wrap; }
-  .chart-image {
-    display: block; max-width: 100%; margin-top: 14px; border: 1px solid var(--line);
-    border-radius: 2px; background: #fff;
+  label.field { display: block; font-weight: 600; margin-bottom: 0.25rem; }
+  .role-select label { display: block; font-size: 0.8rem; font-weight: 600; color: var(--muted); margin-bottom: 0.2rem; }
+  fieldset { border: 1px solid var(--line); border-radius: 10px; padding: 0.75rem 1rem; margin: 1rem 0 0; }
+  legend { font-weight: 600; padding: 0 0.3rem; }
+  .choice { display: flex; align-items: center; gap: 0.5rem; min-height: 44px; }
+  .choice input { width: 1.25rem; height: 1.25rem; }
+
+  .issue { border-left: 6px solid var(--warn); }
+  .issue.blocking { border-left-color: var(--bad); }
+  .evidence { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 0.85rem; background: var(--surface-2); padding: 0.6rem 0.75rem; border-radius: 8px; overflow-wrap: anywhere; }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: 0.75rem; margin-top: 1rem; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 1rem; }
+  .card .k { color: var(--muted); font-size: 0.92rem; }
+  .card .v { font-size: 1.35rem; font-weight: 700; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+
+  ul.imports { list-style: none; padding: 0; margin: 0; }
+  ul.imports li { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 1rem; margin-top: 0.75rem; }
+  ul.imports .row { display: flex; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap; align-items: baseline; }
+
+  #chat { display: flex; flex-direction: column; gap: 1rem; margin-top: 1rem; }
+  .q { align-self: flex-end; background: var(--accent-soft); border-radius: var(--radius); padding: 0.6rem 0.9rem; max-width: 85%; }
+  .a { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 1rem; }
+  .a .answer-text { white-space: pre-wrap; }
+  .a img { max-width: 100%; border-radius: 8px; margin-top: 0.75rem; background: #fff; }
+  .a details { margin-top: 0.75rem; }
+  .a summary { cursor: pointer; font-weight: 600; min-height: 44px; display: flex; align-items: center; }
+  .ask-row { display: flex; gap: 0.6rem; flex-wrap: wrap; margin-top: 0.5rem; }
+  .ask-row input { flex: 1 1 16rem; }
+  .suggestions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.75rem; }
+  .suggestions .btn { font-weight: 500; }
+  .banner { padding: 0.75rem 1rem; border-radius: 10px; background: var(--surface-2); margin-bottom: 1rem; }
+  .banner.bad { background: var(--bad-soft); color: var(--bad); }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .btn, nav.tabs button { transition: background-color 120ms ease, border-color 120ms ease; }
   }
-  .dashboard-table-wrap { margin-top: 14px; overflow-x: auto; }
-  .dashboard-table {
-    width: 100%; border-collapse: collapse; font-size: 12.5px; font-variant-numeric: tabular-nums;
-  }
-  .dashboard-table th {
-    text-align: left; font-family: var(--display); font-size: 10.5px; letter-spacing: 0.1em;
-    text-transform: uppercase; color: var(--faint); padding: 6px 10px; border-bottom: 1px solid var(--line);
-  }
-  .dashboard-table td { padding: 6px 10px; border-bottom: 1px solid var(--line-soft); color: var(--ink); }
-  .dashboard-table tr:hover td { background: var(--panel-2); }
-  .amounts { margin-top: 12px; }
-  .amount-pill {
-    display: inline-block; font-family: var(--display); font-variant-numeric: tabular-nums; font-size: 13px;
-    background: var(--panel-2); border: 1px solid var(--line); border-radius: 2px;
-    padding: 5px 10px; margin: 2px 6px 2px 0; color: var(--ink);
-  }
-  .caveats { margin-top: 12px; font-size: 12.5px; color: var(--dim); }
-  .caveats .k {
-    font-family: var(--display); font-size: 10.5px; letter-spacing: 0.2em; text-transform: uppercase;
-    color: var(--faint);
-  }
-  .caveats ul { margin: 6px 0 0; padding-left: 18px; }
-  .caveats li { margin-bottom: 3px; }
-  .meta { margin-top: 12px; font-family: var(--display); font-size: 10.5px; letter-spacing: 0.1em; color: var(--faint); text-transform: uppercase; }
-  details { margin-top: 10px; }
-  summary {
-    cursor: pointer; font-family: var(--display); font-size: 10.5px; letter-spacing: 0.14em;
-    text-transform: uppercase; color: var(--faint);
-  }
-  .trace-item {
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px;
-    color: var(--dim); margin-top: 6px; padding: 6px 9px; background: var(--panel-2);
-    border: 1px solid var(--line-soft);
-  }
-  #input-row {
-    border-top: 1px solid var(--line); background: var(--panel); padding: 16px 28px;
-    display: flex; gap: 10px; max-width: 800px; margin: 0 auto; width: 100%;
-  }
-  #question {
-    flex: 1; padding: 11px 14px; border: 1px solid var(--line); border-radius: 2px;
-    font-size: 14px; font-family: var(--body); outline: none; background: var(--ground); color: var(--ink);
-  }
-  #question::placeholder { color: var(--faint); }
-  #question:focus { border-color: var(--red); }
-  #send {
-    padding: 11px 20px; border: none; border-radius: 2px; background: var(--red);
-    color: var(--ground); font-family: var(--display); font-size: 12px; font-weight: 700;
-    letter-spacing: 0.14em; text-transform: uppercase; cursor: pointer;
-  }
-  #send:hover { filter: brightness(1.1); }
-  #send:disabled { opacity: .4; cursor: default; filter: none; }
-  .example-q {
-    font-family: var(--display); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase;
-    color: var(--dim); background: var(--panel); border: 1px solid var(--line);
-    padding: 6px 11px; margin: 3px 6px 3px 0; display: inline-block; cursor: pointer; border-radius: 2px;
-  }
-  .example-q:hover { border-color: var(--red); color: var(--ink); }
-  .examples { padding: 14px 28px; max-width: 800px; margin: 0 auto; width: 100%; background: var(--ground); }
-  #chat::-webkit-scrollbar { width: 8px; }
-  #chat::-webkit-scrollbar-thumb { background: var(--line); }
-  #chat::-webkit-scrollbar-track { background: var(--ground); }
-  #upload-bar {
-    padding: 12px 28px; max-width: 800px; margin: 0 auto; width: 100%; background: var(--ground);
-    display: flex; align-items: center; gap: 10px; flex-wrap: wrap; border-bottom: 1px solid var(--line-soft);
-  }
-  #upload-bar .upload-label {
-    font-family: var(--display); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase;
-    color: var(--faint);
-  }
-  #file-input { display: none; }
-  #upload-btn, #upload-go {
-    padding: 8px 14px; border: 1px solid var(--line); border-radius: 2px; background: var(--panel);
-    color: var(--dim); font-family: var(--display); font-size: 11px; font-weight: 600;
-    letter-spacing: 0.1em; text-transform: uppercase; cursor: pointer;
-  }
-  #upload-btn:hover, #upload-go:hover:not(:disabled) { border-color: var(--red); color: var(--ink); }
-  #upload-go { background: var(--red); color: var(--ground); border-color: var(--red); }
-  #upload-go:disabled { opacity: .4; cursor: default; filter: none; }
-  #file-list { font-size: 12px; color: var(--dim); }
-  #upload-results { max-width: 800px; margin: 0 auto; width: 100%; padding: 0 28px 14px; }
-  .upload-result {
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px;
-    padding: 6px 9px; margin-top: 6px; border: 1px solid var(--line-soft); background: var(--panel-2);
-  }
-  .upload-result.ingested { color: var(--mint); border-color: var(--mint); }
-  .upload-result.skipped_duplicate, .upload-result.skipped_unsupported { color: var(--faint); }
-  .upload-result.failed { color: var(--red); border-color: var(--red); }
 </style>
 </head>
 <body>
-  <header>
-    <div>
-      <h1><span class="mark">//</span> Statement Intelligence Agent</h1>
-      <p>Ask about the ingested bank/credit-card statements and expense sheets — every answer is source-cited and verified before it's shown.</p>
+  <a class="visually-hidden" href="#main">Skip to content</a>
+  <header class="site">
+    <div class="wrap">
+      <h1>Statement Intelligence Agent</h1>
+      <p>Turn your bank statements into a list you can check — every number shows where it came from.</p>
+      <nav class="tabs" aria-label="Main">
+        <button type="button" data-view="add" aria-current="page">Add statements</button>
+        <button type="button" data-view="list">Your statements</button>
+        <button type="button" data-view="ask">Ask a question</button>
+      </nav>
     </div>
   </header>
-  <div id="status-bar">Checking ledger status…</div>
-  <div id="upload-bar">
-    <span class="upload-label">Add statements:</span>
-    <input id="file-input" type="file" multiple accept=".pdf,.csv,.xlsx,.jpg,.jpeg,.png">
-    <button id="upload-btn" type="button">Choose files</button>
-    <span id="file-list"></span>
-    <button id="upload-go" type="button" disabled>Upload &amp; ingest</button>
-  </div>
-  <div id="upload-results"></div>
-  <div class="examples" id="examples" hidden>
-    <button class="example-q" data-q="What did I spend on dining in Q2 2025?">Dining spend in Q2 2025</button>
-    <button class="example-q" data-q="Compare my grocery spending across months.">Compare grocery spending by month</button>
-    <button class="example-q" data-q="Are there any charges I should double-check or dispute?">Anything to dispute?</button>
-    <button class="example-q" data-q="Is there anything suspicious about the Cobalt statement?">Anything suspicious about Cobalt?</button>
-    <button class="example-q" data-q="What did I spend on dining last quarter?">Dining spend last quarter</button>
-  </div>
-  <div id="chat"></div>
-  <div id="input-row">
-    <input id="question" type="text" placeholder="Ask a question about your statements…" autocomplete="off">
-    <button id="send">Ask</button>
-  </div>
 
-<script>
-const chat = document.getElementById('chat');
-const input = document.getElementById('question');
-const sendBtn = document.getElementById('send');
-const statusBar = document.getElementById('status-bar');
-const examples = document.getElementById('examples');
-const fileInput = document.getElementById('file-input');
-const uploadChooseBtn = document.getElementById('upload-btn');
-const uploadGoBtn = document.getElementById('upload-go');
-const fileList = document.getElementById('file-list');
-const uploadResults = document.getElementById('upload-results');
+  <div id="announce" class="visually-hidden" aria-live="polite" aria-atomic="true"></div>
 
-function el(tag, cls, html) {
-  const e = document.createElement(tag);
-  if (cls) e.className = cls;
-  if (html !== undefined) e.innerHTML = html;
-  return e;
-}
+  <main id="main" class="wrap" tabindex="-1">
+    <noscript><p class="banner bad">This page needs JavaScript turned on.</p></noscript>
+    <div id="status-bar" class="banner" role="status">Checking your statements…</div>
 
-function escapeHtml(s) {
-  const d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
-}
+    <!-- ============ Add statements: the four-step guided flow ============ -->
+    <section id="view-add" aria-labelledby="add-title">
+      <h2 id="add-title" class="visually-hidden">Add statements</h2>
+      <ol class="steps" aria-label="Progress">
+        <li data-step="files" aria-current="step">Add files</li>
+        <li data-step="check">Check what I found</li>
+        <li data-step="fix">Fix highlighted items</li>
+        <li data-step="done">Done</li>
+      </ol>
 
-async function checkStatus() {
-  statusBar.classList.remove('error');
-  try {
-    const res = await fetch('/api/status');
-    const data = await res.json();
-    if (!data.ready) {
-      statusBar.textContent = data.reason;
-      statusBar.classList.add('error');
-      sendBtn.disabled = true;
-      examples.hidden = true;
-      return;
-    }
-    let msg = `Ledger ready — ${data.transaction_count} transactions across ${data.document_count} documents.`;
-    if (!data.has_api_key) {
-      msg += ' WARNING: ANTHROPIC_API_KEY is not set on the server — questions will fail.';
-      statusBar.classList.add('error');
-    }
-    statusBar.textContent = msg;
-    sendBtn.disabled = false;
-    examples.hidden = false;
-  } catch (e) {
-    statusBar.textContent = 'Could not reach the server.';
-    statusBar.classList.add('error');
-  }
-}
+      <div id="step-files" class="stack">
+        <label class="dropzone" id="dropzone" for="file-input">
+          <strong>Choose statement files</strong>
+          <span class="muted">or drag them here</span>
+        </label>
+        <input id="file-input" class="visually-hidden" type="file" multiple accept=".pdf,.csv,.xlsx,.jpg,.jpeg,.png">
+        <div class="actions" style="margin-top:0">
+          <label class="btn quiet" for="photo-input">Take a photo of a statement</label>
+          <input id="photo-input" class="visually-hidden" type="file" accept="image/*" capture="environment">
+        </div>
+        <p class="muted">You can add PDF statements, CSV or Excel (.xlsx) downloads from your bank, or a clear photo (JPG or PNG). Up to 25 MB each.</p>
+        <ul class="files" id="picked" aria-label="Files you chose"></ul>
+        <p class="note">Your files stay on this computer. Scanned pages and photos are read by Claude through the Anthropic API; nothing is added to your statements until you say so.</p>
+        <div class="actions">
+          <button type="button" class="btn primary" id="start" disabled>Check my files</button>
+        </div>
+      </div>
 
-let pendingFiles = [];
+      <div id="step-progress" class="panel" hidden>
+        <h2>Reading your files</h2>
+        <ul class="files" id="progress-list"></ul>
+      </div>
 
-uploadChooseBtn.addEventListener('click', () => fileInput.click());
+      <div id="step-check" hidden></div>
+      <div id="step-fix" hidden></div>
+      <div id="step-done" hidden></div>
+    </section>
 
-fileInput.addEventListener('change', () => {
-  pendingFiles = Array.from(fileInput.files);
-  fileList.textContent = pendingFiles.length
-    ? `${pendingFiles.length} file(s): ${pendingFiles.map(f => f.name).join(', ')}`
-    : '';
-  uploadGoBtn.disabled = pendingFiles.length === 0;
-});
+    <!-- ============ Your statements ============ -->
+    <section id="view-list" aria-labelledby="list-title" hidden>
+      <h2 id="list-title">Your statements</h2>
+      <p class="muted">Everything you've added, newest first. You can undo any import — it removes only that file's transactions.</p>
+      <ul class="imports" id="imports-list"></ul>
+    </section>
 
-function addUploadResultLine(text, statusClass) {
-  const line = el('div', 'upload-result ' + (statusClass || ''), escapeHtml(text));
-  uploadResults.appendChild(line);
-  return line;
-}
+    <!-- ============ Ask a question ============ -->
+    <section id="view-ask" aria-labelledby="ask-title" hidden>
+      <h2 id="ask-title">Ask a question</h2>
+      <p class="muted">Answers are checked against your statements before they're shown. Open “Why?” under an answer to see the exact rows it used.</p>
+      <form id="ask-form" class="panel">
+        <label class="field" for="question">Your question</label>
+        <div class="ask-row">
+          <input id="question" type="text" autocomplete="off" placeholder="For example: How much did I spend on groceries in June?">
+          <button id="send" class="btn primary" type="submit">Ask</button>
+        </div>
+        <div class="suggestions" id="examples" aria-label="Suggested questions">
+          <button type="button" class="btn quiet" data-q="How much money came in and went out last month?">Money in and out last month</button>
+          <button type="button" class="btn quiet" data-q="What are my regular payments?">My regular payments</button>
+          <button type="button" class="btn quiet" data-q="Are there any charges I should double-check or dispute?">Anything to double-check?</button>
+          <button type="button" class="btn quiet" data-q="What did I spend the most on?">Where most money went</button>
+        </div>
+      </form>
+      <div id="chat" aria-live="polite"></div>
+    </section>
+  </main>
 
-uploadGoBtn.addEventListener('click', async () => {
-  if (!pendingFiles.length) return;
-  uploadGoBtn.disabled = true;
-  uploadChooseBtn.disabled = true;
-  const progressLine = addUploadResultLine(`Uploading ${pendingFiles.length} file(s)…`, '');
-
-  const form = new FormData();
-  pendingFiles.forEach(f => form.append('files', f));
-
-  try {
-    const res = await fetch('/api/upload', { method: 'POST', body: form });
-    const data = await res.json();
-    progressLine.remove();
-    if (data.error) {
-      addUploadResultLine(`Error: ${data.error}`, 'failed');
-    } else {
-      data.results.forEach(r => {
-        const parts = [`${r.file} — ${r.status}`];
-        if (r.transaction_count) parts.push(`${r.transaction_count} txn(s)`);
-        if (r.warnings && r.warnings.length) parts.push(r.warnings.join(' | '));
-        addUploadResultLine(parts.join(' — '), r.status);
-      });
-    }
-  } catch (e) {
-    progressLine.remove();
-    addUploadResultLine(`Upload failed: ${e.message}`, 'failed');
-  } finally {
-    pendingFiles = [];
-    fileInput.value = '';
-    fileList.textContent = '';
-    uploadGoBtn.disabled = true;
-    uploadChooseBtn.disabled = false;
-    checkStatus();
-  }
-});
-
-let hasChatHistory = false;
-
-function addUserBubble(text) {
-  hasChatHistory = true;
-  const row = el('div', 'row user');
-  row.appendChild(el('div', 'bubble-user', escapeHtml(text)));
-  chat.appendChild(row);
-  chat.scrollTop = chat.scrollHeight;
-}
-
-// Chat history lives only in this page's DOM — nothing is persisted to
-// localStorage or the server, so a refresh silently wipes it. Warn before
-// that happens rather than let the user lose a conversation with no notice.
-window.addEventListener('beforeunload', (e) => {
-  if (!hasChatHistory) return;
-  e.preventDefault();
-  e.returnValue = '';
-});
-
-function addCard(node) {
-  const row = el('div', 'row');
-  row.appendChild(node);
-  chat.appendChild(row);
-  chat.scrollTop = chat.scrollHeight;
-  return node;
-}
-
-function addLoadingCard() {
-  const card = el('div', 'card', '<span style="color:var(--faint);font-family:var(--display);font-size:11px;letter-spacing:.14em;text-transform:uppercase">Thinking…</span>');
-  return addCard(card);
-}
-
-function renderAnswer(card, data) {
-  card.innerHTML = '';
-  const status = data.status || (data.error ? 'ERROR' : 'INSUFFICIENT_INFORMATION');
-  card.appendChild(el('span', 'badge ' + status, status.replace(/_/g, ' ')));
-
-  if (data.error) {
-    card.appendChild(el('div', 'answer-text', escapeHtml(data.error)));
-    return;
-  }
-
-  card.appendChild(el('div', 'answer-text', escapeHtml(data.answer_text || '')));
-
-  if (data.chart_image) {
-    const img = document.createElement('img');
-    img.src = data.chart_image;
-    img.className = 'chart-image';
-    img.alt = 'Generated chart';
-    card.appendChild(img);
-  }
-
-  if (data.dashboard_table && data.dashboard_table.rows && data.dashboard_table.rows.length) {
-    const dt = data.dashboard_table;
-    const wrap = el('div', 'dashboard-table-wrap');
-    const table = document.createElement('table');
-    table.className = 'dashboard-table';
-    const thead = el('tr');
-    ['Group', 'Rank', 'Merchant', 'Date', `Amount${dt.currency ? ' (' + dt.currency + ')' : ''}`].forEach(h => {
-      thead.appendChild(el('th', null, escapeHtml(h)));
-    });
-    table.appendChild(thead);
-    dt.rows.forEach(r => {
-      const tr = el('tr');
-      [r.group, r.rank, r.merchant || '', r.date || '', r.amount].forEach(v => {
-        tr.appendChild(el('td', null, escapeHtml(String(v))));
-      });
-      table.appendChild(tr);
-    });
-    wrap.appendChild(table);
-    if (dt.truncated) {
-      wrap.appendChild(el('div', 'meta', `Showing ${dt.rows.length} of ${dt.total_rows} rows (capped)`));
-    }
-    card.appendChild(wrap);
-  }
-
-  if (data.amounts && data.amounts.length) {
-    const wrap = el('div', 'amounts');
-    data.amounts.forEach(a => {
-      const label = a.label ? ` — ${escapeHtml(a.label)}` : '';
-      wrap.appendChild(el('span', 'amount-pill', `${escapeHtml(a.amount)} ${escapeHtml(a.currency)}${label}`));
-    });
-    card.appendChild(wrap);
-  }
-
-  if (data.caveats && data.caveats.length) {
-    const wrap = el('div', 'caveats');
-    wrap.appendChild(el('div', 'k', 'Caveats'));
-    const ul = el('ul');
-    data.caveats.forEach(c => ul.appendChild(el('li', null, escapeHtml(c))));
-    wrap.appendChild(ul);
-    card.appendChild(wrap);
-  }
-
-  const metaParts = [];
-  if (data.cited_count) metaParts.push(`${data.cited_count} txn(s) cited`);
-  if (data.trace) metaParts.push(`${data.trace.length} tool call(s)`);
-  if (metaParts.length) card.appendChild(el('div', 'meta', metaParts.join(' · ')));
-
-  if (data.trace && data.trace.length) {
-    const details = el('details');
-    details.appendChild(el('summary', null, 'Execution trace'));
-    data.trace.forEach((t, i) => {
-      details.appendChild(el('div', 'trace-item', `${i + 1}. ${escapeHtml(t.tool)}(${escapeHtml(JSON.stringify(t.input))})`));
-    });
-    card.appendChild(details);
-  }
-}
-
-async function ask(question) {
-  if (!question.trim()) return;
-  addUserBubble(question);
-  input.value = '';
-  sendBtn.disabled = true;
-  const card = addLoadingCard();
-
-  try {
-    const res = await fetch('/api/ask', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question }),
-    });
-    const data = await res.json();
-    renderAnswer(card, data);
-  } catch (e) {
-    renderAnswer(card, { error: 'Request failed: ' + e.message });
-  } finally {
-    sendBtn.disabled = false;
-    input.focus();
-  }
-}
-
-sendBtn.addEventListener('click', () => ask(input.value));
-input.addEventListener('keydown', (e) => { if (e.key === 'Enter') ask(input.value); });
-examples.addEventListener('click', (e) => {
-  const q = e.target.getAttribute('data-q');
-  if (q) ask(q);
-});
-
-checkStatus();
-</script>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
 </html>

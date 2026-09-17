@@ -39,14 +39,23 @@ def _cmd_ingest(args: argparse.Namespace) -> None:
     ingested = [r for r in reports if r.status == "ingested"]
     skipped_dup = [r for r in reports if r.status == "skipped_duplicate"]
     skipped_unsupported = [r for r in reports if r.status == "skipped_unsupported"]
+    not_added = [r for r in reports if r.status in ("needs_mapping", "needs_review", "no_transactions")]
     failed = [r for r in reports if r.status == "failed"]
 
     print(f"Ingested {len(ingested)} file(s), {sum(r.transaction_count for r in ingested)} transaction(s) total.")
     for r in ingested:
-        line = f"  [OK] {r.file_path} — {r.transaction_count} txn(s)"
+        line = f"  [OK] {r.file_path} — {r.transaction_count} txn(s)  (import {r.job_id})"
         print(line)
         for w in r.warnings:
             print(f"        ! {w}")
+    if not_added:
+        print(f"NOT added — {len(not_added)} file(s) need a person to look (nothing was written to the ledger):")
+        labels = {"needs_mapping": "CHECK COLUMNS", "needs_review": "NEEDS REVIEW", "no_transactions": "NO TRANSACTIONS"}
+        for r in not_added:
+            print(f"  [{labels[r.status]}] {r.file_path}")
+            for w in r.warnings:
+                print(f"        ! {w}")
+        print("  Open `serve` and add these files in the browser to confirm columns or review them.")
     if skipped_dup:
         print(f"Skipped {len(skipped_dup)} already-ingested file(s) (unchanged since last run).")
     if skipped_unsupported:
@@ -164,6 +173,38 @@ def _cmd_serve(args: argparse.Namespace) -> None:
     app.run(host="127.0.0.1", port=args.port, debug=False)
 
 
+def _cmd_imports(args: argparse.Namespace) -> None:
+    db_path = _resolve_db_or_exit(args)
+    store = Store(db_path)
+    jobs = store.list_jobs(limit=args.limit)
+    store.close()
+    if not jobs:
+        print("No imports recorded in this ledger yet.")
+        return
+    for job in jobs:
+        print(f"{job.job_id}  {job.state.value:<13} {job.transaction_count:>5} txn(s)  {job.created_at}  {job.original_filename}")
+        if job.error_summary:
+            print(f"    ! {job.error_summary}")
+
+
+def _cmd_rollback(args: argparse.Namespace) -> None:
+    from .ingest.pipeline import ImportConflict, rollback_import
+
+    db_path = _resolve_db_or_exit(args)
+    store = Store(db_path)
+    try:
+        job = rollback_import(store, args.job_id)
+        print(f"Removed import {job.job_id} ({job.original_filename}) from {db_path}.")
+    except KeyError:
+        print(f"ERROR: no import with id {args.job_id}", file=sys.stderr)
+        sys.exit(1)
+    except ImportConflict as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        store.close()
+
+
 def _cmd_clients(args: argparse.Namespace) -> None:
     clients = load_clients()
     if not clients:
@@ -200,6 +241,18 @@ def main() -> None:
     p_serve.add_argument("--client", default=None, help="named client from clients.json, instead of --db")
     p_serve.add_argument("--port", type=int, default=5050)
     p_serve.set_defaults(func=_cmd_serve)
+
+    p_imports = sub.add_parser("imports", help="list import jobs recorded in the ledger")
+    p_imports.add_argument("--db", default=None, help="ledger DB path (default: ledger.db)")
+    p_imports.add_argument("--client", default=None, help="named client from clients.json, instead of --db")
+    p_imports.add_argument("--limit", type=int, default=50)
+    p_imports.set_defaults(func=_cmd_imports)
+
+    p_rollback = sub.add_parser("rollback", help="undo one committed import, leaving every other import untouched")
+    p_rollback.add_argument("job_id")
+    p_rollback.add_argument("--db", default=None, help="ledger DB path (default: ledger.db)")
+    p_rollback.add_argument("--client", default=None, help="named client from clients.json, instead of --db")
+    p_rollback.set_defaults(func=_cmd_rollback)
 
     p_clients = sub.add_parser("clients", help="list clients registered in clients.json")
     p_clients.set_defaults(func=_cmd_clients)

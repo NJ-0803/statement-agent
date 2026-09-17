@@ -112,12 +112,25 @@ _MONTH_NAMES = (
     "january|february|march|april|june|july|august|september|october|november|december"
 )
 
-_ISO_RE = re.compile(r"^\s*(\d{4})-(\d{1,2})-(\d{1,2})\s*$")
-_NUMERIC_SLASH_RE = re.compile(r"^\s*(\d{1,2})[/-](\d{1,2})[/-](\d{4})\s*$")
+_ISO_RE = re.compile(r"^\s*(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})\s*$")
+# Bank exports routinely use dotted dates (31.03.2025) and two-digit years (31/03/25), not just a
+# 4-digit year with '/' or '-' — both were outright rejected before the generalized import work.
+_NUMERIC_SLASH_RE = re.compile(r"^\s*(\d{1,2})[/.-](\d{1,2})[/.-](\d{4}|\d{2})\s*$")
 _TEXTUAL_RE = re.compile(
     rf"^\s*(?:(\d{{1,2}})\s+)?({_MONTH_NAMES})\.?,?\s+(?:(\d{{1,2}}),?\s+)?(\d{{4}})\s*$",
     re.IGNORECASE,
 )
+# "01-Apr-2025" / "01-Apr-25" / "01/Apr/2025" — the most common Indian bank-export date shape
+_TEXTUAL_DASH_RE = re.compile(rf"^\s*(\d{{1,2}})[-/ ]({_MONTH_NAMES})\.?[-/ ,]\s*(\d{{4}}|\d{{2}})\s*$", re.IGNORECASE)
+
+
+def _expand_year(year: str) -> int:
+    """Two-digit years pivot on the current year: up to next year's two digits -> 20xx, else 19xx.
+    A statement dated '31/03/25' in 2026 is 2025, never 1925."""
+    if len(year) == 4:
+        return int(year)
+    yy = int(year)
+    return 2000 + yy if yy <= (datetime.now().year % 100) + 1 else 1900 + yy
 
 # A trailing time-of-day (e.g. "01-01-2023 08:00" or an ISO "2023-01-01 08:00:00") — found
 # necessary against a real downloaded dataset whose date column was a full timestamp, not a
@@ -175,7 +188,7 @@ class DocumentDateResolver:
     def observe(self, raw: str) -> None:
         m = _NUMERIC_SLASH_RE.match(_strip_trailing_time(raw or ""))
         if m:
-            a, b, year = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            a, b, year = int(m.group(1)), int(m.group(2)), _expand_year(m.group(3))
             self._numeric_dates.append((a, b, year))
 
     def resolve_convention(self) -> None:
@@ -213,9 +226,16 @@ class DocumentDateResolver:
             if day and month:
                 return _safe_date(int(year), month, int(day), text, confidence=1.0)
 
+        m = _TEXTUAL_DASH_RE.match(match_text)
+        if m:
+            day, month_name, year = m.groups()
+            month = _MONTH_LOOKUP.get(month_name.lower())
+            if month:
+                return _safe_date(_expand_year(year), month, int(day), text, confidence=1.0)
+
         m = _NUMERIC_SLASH_RE.match(match_text)
         if m:
-            a, b, year = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            a, b, year = int(m.group(1)), int(m.group(2)), _expand_year(m.group(3))
             if a > 12 and b <= 12:
                 return _safe_date(year, b, a, text, confidence=1.0)
             if b > 12 and a <= 12:
