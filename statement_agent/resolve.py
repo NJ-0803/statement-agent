@@ -40,6 +40,12 @@ _FEE_RE = re.compile(r"\b(?:LATE\s*FEE|ANNUAL\s*FEE|SERVICE\s*CHARGE|PENALTY\s*C
 _INTEREST_RE = re.compile(r"\bINTEREST\b", re.IGNORECASE)
 _REVERSAL_RE = re.compile(r"\bREVERSAL\b|\bREVERSED\b", re.IGNORECASE)
 _REIMBURSEMENT_RE = re.compile(r"\bREIMBURSEMENT\b|\bREIMBURSED\b", re.IGNORECASE)
+_REFUND_WORDS_RE = re.compile(r"\bREFUND(?:ED)?\b|\bRFND\b|\bRETURN(?:ED)?\b|\bCHARGE\s*BACK\b|\bCHARGEBACK\b", re.IGNORECASE)
+_INCOME_RE = re.compile(
+    r"\bSALARY\b|\bSAL\b|\bPAYROLL\b|\bPAY\s*CHECK\b|\bPAYCHECK\b|\bWAGES?\b|\bSTIPEND\b|\bPENSION\b|"
+    r"\bDIVIDEND\b|\bBONUS\b|\bCOMMISSION\b|\bFREELANCE\b|\bRENT\s+RECEIVED\b|\bINCENTIVE\b",
+    re.IGNORECASE,
+)
 _PAYMENT_RECEIVED_RE = re.compile(r"\bPAYMENT\s*RECEIVED\b", re.IGNORECASE)
 # Bank-side debit for paying off a credit card bill — the counterpart to the card's own
 # "PAYMENT RECEIVED" credit. Without this, a bank statement's "ICICI CARD PAYMENT" debit
@@ -59,7 +65,11 @@ _EMI_RE = re.compile(r"\bEMI\b|\bINSTAL(?:L)?MENT\b", re.IGNORECASE)
 _CASHBACK_RE = re.compile(r"\bCASHBACK\b|\bCASH\s*BACK\b|\bREWARD(?:S)?\s*(?:REDEMPTION|POINTS)\b", re.IGNORECASE)
 
 
-def refine_economic_type(t: Transaction) -> None:
+def refine_economic_type(t: Transaction, doc_type: str = "unknown") -> None:
+    """Keyword refinement of the reader's generic PURCHASE/REFUND. For money coming in, a refund is only
+    assumed when the row says so or it's on a card statement (where credits are refunds or payments); on a
+    bank statement a salary word means INCOME, a bank transfer rail means TRANSFER, and anything else is
+    INCOME at low confidence — a bank credit is rarely a refund, and the person can correct it."""
     desc = t.description_raw or t.merchant_raw or ""
 
     if t.direction == Direction.DEBIT and t.economic_type == EconomicType.PURCHASE:
@@ -87,11 +97,43 @@ def refine_economic_type(t: Transaction) -> None:
             t.economic_type = EconomicType.REIMBURSEMENT
         elif _PAYMENT_RECEIVED_RE.search(desc):
             t.economic_type = EconomicType.CREDIT_CARD_PAYMENT
+        elif _REFUND_WORDS_RE.search(desc):
+            pass
+        elif _INCOME_RE.search(desc):
+            t.economic_type = EconomicType.INCOME
+        elif _INTEREST_RE.search(desc):
+            t.economic_type = EconomicType.INTEREST
+        elif doc_type == "credit_card_statement":
+            pass
+        elif _TRANSFER_RE.search(desc) or re.search(r"\bUPI\b|\bBY\s+TRANSFER\b|\bTRF\b", desc, re.IGNORECASE):
+            t.economic_type, t.economic_type_confidence = EconomicType.TRANSFER, 0.7
+        elif doc_type == "bank_statement":
+            t.economic_type, t.economic_type_confidence = EconomicType.INCOME, 0.5
 
 
-def refine_all_economic_types(transactions: list[Transaction]) -> None:
+def refine_all_economic_types(transactions: list[Transaction], doc_type: str = "unknown") -> None:
     for t in transactions:
-        refine_economic_type(t)
+        refine_economic_type(t, doc_type)
+        t.economic_type_auto = t.economic_type.value
+        t.economic_type_source = t.economic_type_source or "auto"
+
+
+def assign_economic_types(transactions: list[Transaction], rules: list[CorrectionRule] = ()) -> None:
+    """Re-applies type rules over what reading decided. A row you set yourself is never recomputed; a row
+    with no recorded automatic type (committed before this existed) keeps its current type as automatic."""
+    type_rules = [r for r in rules if r.economic_type]
+    for t in transactions:
+        if t.economic_type_source == "you":
+            continue
+        if t.economic_type_auto is None:
+            t.economic_type_auto = t.economic_type.value
+        rule = best_rule(t, type_rules)
+        if rule is not None:
+            t.economic_type = EconomicType(rule.economic_type)
+            t.economic_type_source, t.economic_type_rule_id = "rule", rule.rule_id
+        else:
+            t.economic_type = EconomicType(t.economic_type_auto)
+            t.economic_type_source, t.economic_type_rule_id = "auto", None
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +203,9 @@ def assign_categories(transactions: list[Transaction], rules: list[CorrectionRul
         if t.category_source == "you":
             continue
         if t.economic_type != EconomicType.PURCHASE:
-            continue  # only PURCHASE events get a spend category — everything else is economic-type-only
+            # only PURCHASE events get a spend category — everything else is economic-type-only
+            t.category = t.category_confidence = t.category_source = t.category_rule_id = None
+            continue
         t.category_rule_id = None
         rule = best_rule(t, category_rules)
         result = categorize(t.merchant_raw or t.description_raw)
@@ -189,6 +233,9 @@ def assign_categories(transactions: list[Transaction], rules: list[CorrectionRul
 # Duplicate detection — flags only, never deletes
 # ---------------------------------------------------------------------------
 
+_DEDUP_TYPES = (EconomicType.PURCHASE, EconomicType.REFUND, EconomicType.INCOME)
+
+
 def detect_duplicates(transactions: list[Transaction], *, date_tolerance_days: int = 0) -> None:
     """Flags probable duplicates: same document, same merchant, same amount,
     same date (or within tolerance). Same-merchant/same-amount/same-DAY is
@@ -200,7 +247,7 @@ def detect_duplicates(transactions: list[Transaction], *, date_tolerance_days: i
         by_doc.setdefault(t.document_id, []).append(t)
 
     for doc_id, txns in by_doc.items():
-        purchases = [t for t in txns if t.economic_type in (EconomicType.PURCHASE, EconomicType.REFUND)]
+        purchases = [t for t in txns if t.economic_type in _DEDUP_TYPES]
         for i, a in enumerate(purchases):
             if a.duplicate_of or a.transaction_date is None:
                 continue
@@ -249,7 +296,7 @@ def detect_cross_document_duplicates(transactions: list[Transaction], *, date_to
     """
     candidates = [
         t for t in transactions
-        if t.economic_type in (EconomicType.PURCHASE, EconomicType.REFUND)
+        if t.economic_type in _DEDUP_TYPES
         and t.duplicate_of is None
         and t.transaction_date is not None
     ]
@@ -428,9 +475,10 @@ def resolve_all(doc: Document, transactions: list[Transaction], rules: list[Corr
     """Runs the full deterministic resolution pass for one document's transactions."""
     assign_extraction_sequence(transactions)
     assign_merchant_normalization(transactions)
-    refine_all_economic_types(transactions)
+    refine_all_economic_types(transactions, doc.doc_type)
     detect_duplicates(transactions)
     assign_merchant_names(transactions, list(rules))
+    assign_economic_types(transactions, list(rules))
     assign_categories(transactions, list(rules))
     reconcile_document(doc, transactions)
     flag_unusual_structure(doc, transactions)

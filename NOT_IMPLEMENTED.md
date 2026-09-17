@@ -16,6 +16,12 @@ than hidden behind a confident-looking feature list.
 
 ## A. Cross-transaction linking (the single biggest gap — one root cause, many symptoms)
 
+> **Update (Sept 2026, `DECISIONS.md` §36): mostly built.** Refund/reversal, reimbursement, own-account
+> transfer and card-payment linking, plus recurring payments, now exist, with matched vs suggested links and
+> your decisions remembered. Still not built: EMI instalments linked to their original purchase, FX markup
+> fee ↔ foreign charge, and pending ↔ posted rows. The fixture caveat below still applies: every positive
+> case is synthetic.
+
 **What's missing:** an `EconomicEvent` layer that links *related* transactions to each other — a
 refund to its original purchase, a reimbursement to the expense it covers, an EMI's monthly principal
 to the purchase it's paying off, a foreign-currency charge to its INR settlement and FX fee.
@@ -396,9 +402,8 @@ research work that can't be done in code at all.
 - Merged cells in XLSX are read as blank (openpyxl read-only mode); formulas use cached values only.
 - Header vocabulary is English. A German or Hindi header goes to needs_mapping, which is honest but
   unhelpful.
-- Category and merchant-name corrections are remembered as word rules (`DECISIONS.md` §35), but the
-  *economic type* can't be corrected, and there's no income type: a credit that isn't a reversal,
-  cashback, reimbursement or card payment is typed `REFUND`, so a salary is a "refund" to the agent. Rules can't match on amount or account, and can't be exported or shared.
+- Category, merchant-name and kind corrections are remembered as word rules (`DECISIONS.md` §35–36).
+  Rules can't match on amount or account, and can't be exported or shared.
 - No source viewer that opens the original page or row next to an answer. "Why?" shows the cited rows'
   extracted text.
 
@@ -406,7 +411,7 @@ research work that can't be done in code at all.
 - No WCAG 2.2 AA audit with screen readers, and no usability sessions with older adults.
 - No Hindi or regional language, text-to-speech or voice input.
 - No trusted-person sharing or alerts.
-- No recurring-payment, refund/reversal or transfer linking (still `NOT_IMPLEMENTED.md` §A).
+- Recurring-payment, refund/reversal and transfer linking are built (§36); EMI, FX-fee and pending links aren't.
 - No separate `Account` record with masked identity, and no `booking_date` distinct from `transaction_date`.
 
 **Legal and regulatory (roadmap §5.2–5.3) — needs counsel, not code**

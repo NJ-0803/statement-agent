@@ -35,8 +35,8 @@ MAX_TOOL_ITERATIONS = 12
 
 _CATEGORY_ENUM = ["Dining", "Groceries", "Transport", "Travel", "Entertainment", "Subscriptions",
                    "Utilities", "Shopping", "Healthcare", "Personal Care"]
-_ECONOMIC_TYPE_ENUM = ["PURCHASE", "REFUND", "TRANSFER", "CREDIT_CARD_PAYMENT", "CASH_WITHDRAWAL",
-                        "REIMBURSEMENT", "FEE", "INTEREST", "REVERSAL", "UNKNOWN"]
+_ECONOMIC_TYPE_ENUM = ["PURCHASE", "INCOME", "REFUND", "TRANSFER", "CREDIT_CARD_PAYMENT", "CASH_WITHDRAWAL",
+                        "REIMBURSEMENT", "FEE", "INTEREST", "REVERSAL", "INVESTMENT_TRANSFER", "CASHBACK", "UNKNOWN"]
 
 TOOL_SCHEMAS = [
     {
@@ -405,6 +405,55 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "name": "net_spending",
+        "description": (
+            "Spending AFTER refunds: purchases minus the refunds linked to them (only matched or confirmed "
+            "links are subtracted). Use for 'net spend', 'after refunds', 'what did I really spend'. Also lists "
+            "suggested refund links and unlinked refunds that were NOT subtracted — disclose these as a caveat."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "category": {"type": "string"},
+                "date_from": {"type": "string", "description": "ISO date"},
+                "date_to": {"type": "string", "description": "ISO date"},
+                "currency": {"type": "string"},
+                "group_by": {"type": "string", "enum": ["category", "merchant", "month"]},
+            },
+        },
+    },
+    {
+        "name": "linked_transactions",
+        "description": (
+            "Related transactions linked together: refund↔purchase, reimbursement↔expense, transfer between "
+            "the person's own accounts (out↔in), card bill payment↔card's payment received. Each link has a "
+            "plain-language reason and a status: matched/confirmed links are reliable; suggested links are NOT "
+            "confirmed and must be described as possible only. Use for 'was this refunded?', 'which "
+            "reimbursements match my expenses?', 'did my transfer arrive?'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string", "enum": ["refund", "reimbursement", "transfer", "card_payment"]},
+                "status": {"type": "string", "enum": ["matched", "suggested", "confirmed", "rejected"]},
+                "transaction_id": {"type": "string", "description": "only links that include this transaction"},
+                "limit": {"type": "integer"},
+            },
+        },
+    },
+    {
+        "name": "recurring_payments",
+        "description": (
+            "Regular payments and regular income (subscriptions, rent, EMIs, salary): cadence, usual amount, "
+            "last and next expected date, and flags if the amount changed or it seems to have stopped. Use for "
+            "'what are my regular payments/subscriptions?', 'has my salary come in?'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"direction": {"type": "string", "enum": ["DEBIT", "CREDIT"], "description": "DEBIT = payments, CREDIT = income"}},
+        },
+    },
+    {
         "name": "final_answer",
         "description": "Call this to give your final answer. This is the ONLY way to complete a turn — do not just write prose.",
         "input_schema": {
@@ -437,7 +486,17 @@ def _parse_date(s: str | None) -> date | None:
     return date.fromisoformat(s) if s else None
 
 
-def _dispatch(tool_name: str, tool_input: dict, ledger: list[Transaction], documents: list[dict]):
+def _dispatch(tool_name: str, tool_input: dict, ledger: list[Transaction], documents: list[dict], events=()):
+    if tool_name == "net_spending":
+        return T.net_spending(
+            ledger, list(events), category=tool_input.get("category"), date_from=_parse_date(tool_input.get("date_from")),
+            date_to=_parse_date(tool_input.get("date_to")), currency=tool_input.get("currency"), group_by=tool_input.get("group_by"),
+        )
+    if tool_name == "linked_transactions":
+        return T.linked_transactions(ledger, list(events), kind=tool_input.get("kind"), status=tool_input.get("status"),
+                                     transaction_id=tool_input.get("transaction_id"), limit=int(tool_input.get("limit") or 50))
+    if tool_name == "recurring_payments":
+        return T.recurring_payments(ledger, list(events), direction=tool_input.get("direction"))
     if tool_name == "list_documents":
         return T.list_documents(ledger, documents)
     if tool_name == "search_transactions":
@@ -568,6 +627,7 @@ def run_agent(
     ledger: list[Transaction],
     *,
     documents: list[dict] | None = None,
+    events: list | None = None,
     client=None,
     max_attempts: int = MAX_ATTEMPTS,
 ) -> AgentRunResult:
@@ -602,7 +662,7 @@ def run_agent(
             if tu.name == "final_answer":
                 continue
             try:
-                result = _dispatch(tu.name, tu.input, ledger, documents)
+                result = _dispatch(tu.name, tu.input, ledger, documents, events or [])
                 trace.append(ToolCallRecord(tu.name, tu.input, result, reasoning=reasoning))
                 result_blocks.append({"type": "tool_result", "tool_use_id": tu.id, "content": json.dumps(_to_jsonable(result))})
             except Exception as e:  # noqa: BLE001 - a bad tool call must not crash the whole answer

@@ -109,6 +109,7 @@ def _cmd_ask(args: argparse.Namespace) -> None:
     store = Store(db_path)
     ledger = store.all_transactions()
     documents = store.all_documents_as_dicts()
+    events = store.list_events()
     store.close()
 
     if not ledger:
@@ -125,16 +126,16 @@ def _cmd_ask(args: argparse.Namespace) -> None:
                 break
             if not question:
                 continue
-            _ask_one(question, ledger, documents, args.trace)
+            _ask_one(question, ledger, documents, args.trace, events)
     else:
-        _ask_one(args.question, ledger, documents, args.trace)
+        _ask_one(args.question, ledger, documents, args.trace, events)
 
 
-def _ask_one(question: str, ledger, documents, show_trace: bool) -> None:
+def _ask_one(question: str, ledger, documents, show_trace: bool, events=()) -> None:
     from .agent.loop import run_agent
 
     try:
-        result = run_agent(question, ledger, documents=documents)
+        result = run_agent(question, ledger, documents=documents, events=list(events))
     except Exception as e:  # noqa: BLE001 - an API/network failure must produce a clean message, not a stack trace
         import anthropic
 

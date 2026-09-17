@@ -20,8 +20,8 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from .schema import (
-    CorrectionRule, Direction, Document, EconomicType, ExtractionMethod, ImportJob, ImportState, SourceRef,
-    Transaction,
+    CorrectionRule, Direction, Document, EconomicEvent, EconomicType, EventKind, EventMember, EventStatus,
+    ExtractionMethod, ImportJob, ImportState, SourceRef, Transaction,
 )
 
 _SCHEMA = """
@@ -116,6 +116,31 @@ CREATE TABLE IF NOT EXISTS corrections_log (
     detail TEXT NOT NULL  -- JSON
 );
 
+CREATE TABLE IF NOT EXISTS economic_events (
+    event_id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    status TEXT NOT NULL,
+    confidence REAL,
+    reason TEXT,
+    signature TEXT NOT NULL UNIQUE,
+    details TEXT,  -- JSON
+    source TEXT NOT NULL DEFAULT 'auto'
+);
+
+CREATE TABLE IF NOT EXISTS event_members (
+    event_id TEXT NOT NULL REFERENCES economic_events(event_id) ON DELETE CASCADE,
+    transaction_id TEXT NOT NULL,
+    role TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_event_members_txn ON event_members(transaction_id);
+
+-- your yes/no on a link, by signature, so it survives every rebuild and re-import
+CREATE TABLE IF NOT EXISTS link_decisions (
+    signature TEXT PRIMARY KEY,
+    decision TEXT NOT NULL,  -- confirmed | rejected
+    decided_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS mapping_profiles (
     fingerprint TEXT PRIMARY KEY,
     mapping_json TEXT NOT NULL,
@@ -156,6 +181,12 @@ _COLUMN_MIGRATIONS = {
         ("merchant_canonical", "TEXT"),
         ("merchant_source", "TEXT"),
         ("merchant_rule_id", "TEXT"),
+        ("economic_type_auto", "TEXT"),
+        ("economic_type_source", "TEXT"),
+        ("economic_type_rule_id", "TEXT"),
+    ],
+    "correction_rules": [
+        ("economic_type", "TEXT"),
     ],
     "documents": [
         ("import_job_id", "TEXT"),
@@ -249,10 +280,10 @@ class Store:
                 t.value_date.isoformat() if t.value_date else None, t.reference_id, _dec(t.balance_after),
                 json.dumps(t.field_confidence) if t.field_confidence else None, t.import_job_id,
                 json.dumps(t.field_reasons) if t.field_reasons else None,
-                t.category_source, t.category_rule_id, t.merchant_canonical, t.merchant_source, t.merchant_rule_id,
+                *(getattr(t, c) for c in _CORRECTION_COLUMNS),
             ))
         self.conn.executemany(
-            """
+            f"""
             INSERT OR REPLACE INTO transactions (
                 transaction_id, document_id, transaction_date, date_raw, date_plausible, extraction_sequence,
                 description_raw, merchant_raw, merchant_normalized, amount, currency, amount_raw, direction,
@@ -261,8 +292,8 @@ class Store:
                 source_file_path, source_page, source_row, source_raw_text, extraction_method,
                 extraction_confidence, duplicate_of, duplicate_reason, notes,
                 value_date, reference_id, balance_after, field_confidence, import_job_id, field_reasons,
-                category_source, category_rule_id, merchant_canonical, merchant_source, merchant_rule_id
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                {", ".join(_CORRECTION_COLUMNS)}
+            ) VALUES ({",".join(["?"] * (34 + len(_CORRECTION_COLUMNS)))})
             """,
             rows,
         )
@@ -325,11 +356,12 @@ class Store:
         rule.created_at = rule.created_at or rule.updated_at
         self.conn.execute(
             """INSERT INTO correction_rules (rule_id, pattern, category, merchant_name, created_at, updated_at,
-                   source_transaction_id) VALUES (?,?,?,?,?,?,?)
+                   source_transaction_id, economic_type) VALUES (?,?,?,?,?,?,?,?)
                ON CONFLICT(rule_id) DO UPDATE SET pattern=excluded.pattern, category=excluded.category,
-                   merchant_name=excluded.merchant_name, updated_at=excluded.updated_at""",
+                   merchant_name=excluded.merchant_name, updated_at=excluded.updated_at,
+                   economic_type=excluded.economic_type""",
             (rule.rule_id, rule.pattern, rule.category, rule.merchant_name, rule.created_at, rule.updated_at,
-             rule.source_transaction_id),
+             rule.source_transaction_id, rule.economic_type),
         )
 
     def _log(self, action: str, detail: dict, *, transaction_id: str | None = None, rule_id: str | None = None) -> None:
@@ -347,9 +379,10 @@ class Store:
 
     def _write_correction_fields(self, txns: list[Transaction]) -> None:
         self.conn.executemany(
-            f"UPDATE transactions SET category = ?, category_confidence = ?, "
+            f"UPDATE transactions SET category = ?, category_confidence = ?, economic_type = ?, economic_type_confidence = ?, "
             f"{', '.join(f'{c} = ?' for c in _CORRECTION_COLUMNS)} WHERE transaction_id = ?",
-            [(t.category, t.category_confidence, *(getattr(t, c) for c in _CORRECTION_COLUMNS), t.transaction_id)
+            [(t.category, t.category_confidence, t.economic_type.value, t.economic_type_confidence,
+              *(getattr(t, c) for c in _CORRECTION_COLUMNS), t.transaction_id)
              for t in txns],
         )
 
@@ -377,7 +410,99 @@ class Store:
                 self._write_correction_fields([transaction])
             self._log(action, detail, transaction_id=transaction.transaction_id if transaction else None,
                       rule_id=(rule.rule_id if rule else remove_rule_id))
-            return self._reapply(compute)
+            changed = self._reapply(compute)
+            self._rebuild_links()
+            return changed
+
+    # -- economic events ------------------------------------------------------------------
+
+    def link_decisions(self) -> dict[str, str]:
+        return {r["signature"]: r["decision"] for r in self.conn.execute("SELECT * FROM link_decisions")}
+
+    def set_link_decision(self, signature: str, decision: str | None) -> None:
+        if decision is None:
+            self.conn.execute("DELETE FROM link_decisions WHERE signature = ?", (signature,))
+        else:
+            self.conn.execute(
+                "INSERT INTO link_decisions (signature, decision, decided_at) VALUES (?,?,?) "
+                "ON CONFLICT(signature) DO UPDATE SET decision=excluded.decision, decided_at=excluded.decided_at",
+                (signature, decision, _now()),
+            )
+
+    def replace_events(self, events: list[EconomicEvent]) -> None:
+        """Swaps the whole event set (caller holds the transaction)."""
+        self.conn.execute("DELETE FROM event_members")
+        self.conn.execute("DELETE FROM economic_events")
+        self.conn.executemany(
+            "INSERT INTO economic_events (event_id, kind, status, confidence, reason, signature, details, source) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            [(e.event_id, e.kind.value, e.status.value, e.confidence, e.reason, e.signature,
+              json.dumps(e.details, default=str), e.source) for e in events],
+        )
+        self.conn.executemany(
+            "INSERT INTO event_members (event_id, transaction_id, role) VALUES (?,?,?)",
+            [(e.event_id, m.transaction_id, m.role) for e in events for m in e.members],
+        )
+
+    def list_events(self) -> list[EconomicEvent]:
+        members: dict[str, list[EventMember]] = {}
+        for r in self.conn.execute("SELECT * FROM event_members ORDER BY rowid"):
+            members.setdefault(r["event_id"], []).append(EventMember(r["transaction_id"], r["role"]))
+        return [
+            EconomicEvent(
+                event_id=r["event_id"], kind=EventKind(r["kind"]), status=EventStatus(r["status"]),
+                confidence=r["confidence"], reason=r["reason"] or "", members=members.get(r["event_id"], []),
+                signature=r["signature"], details=json.loads(r["details"] or "{}"), source=r["source"],
+            )
+            for r in self.conn.execute("SELECT * FROM economic_events ORDER BY rowid")
+        ]
+
+    def _rebuild_links(self) -> None:
+        """Recomputes every link and its effect on row types (caller holds the transaction)."""
+        from .linking import apply_link_effects, build_events
+
+        ledger = self.all_transactions()
+        manual = [e for e in self.list_events() if e.source == "you"]
+        before = {t.transaction_id: _correction_state(t) for t in ledger}
+        events = build_events(ledger, self.all_documents_as_dicts(), self.link_decisions(), manual)
+        apply_link_effects(ledger, events)
+        # a type a link just changed can change what else matches (a transfer-in is no longer "income")
+        events = build_events(ledger, self.all_documents_as_dicts(), self.link_decisions(), manual)
+        self._write_correction_fields([t for t in ledger if _correction_state(t) != before[t.transaction_id]])
+        self.replace_events(events)
+
+    def rebuild_links(self) -> None:
+        with self.conn:
+            self._rebuild_links()
+
+    def decide_link(self, event: EconomicEvent, decision: str | None) -> None:
+        """confirmed | rejected | None (undo your decision). A link you made yourself is removed on reject."""
+        with self.conn:
+            if event.source == "you" and decision == "rejected":
+                self.conn.execute("DELETE FROM economic_events WHERE event_id = ?", (event.event_id,))
+                self.conn.execute("DELETE FROM event_members WHERE event_id = ?", (event.event_id,))
+            else:
+                self.set_link_decision(event.signature, decision)
+            self._log("link_decision", {"kind": event.kind.value, "decision": decision, "reason": event.reason},
+                      rule_id=event.event_id)
+            self._rebuild_links()
+
+    def add_manual_link(self, event: EconomicEvent) -> None:
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO economic_events (event_id, kind, status, confidence, reason, signature, details, source) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (event.event_id, event.kind.value, event.status.value, event.confidence, event.reason, event.signature,
+                 json.dumps(event.details, default=str), "you"),
+            )
+            self.conn.executemany("INSERT INTO event_members (event_id, transaction_id, role) VALUES (?,?,?)",
+                                  [(event.event_id, m.transaction_id, m.role) for m in event.members])
+            self._log("add_link", {"kind": event.kind.value, "members": [m.transaction_id for m in event.members]},
+                      rule_id=event.event_id)
+            self._rebuild_links()
+
+    def get_event(self, event_id: str) -> EconomicEvent | None:
+        return next((e for e in self.list_events() if e.event_id == event_id), None)
 
     # -- import jobs ------------------------------------------------------------------
 
@@ -478,6 +603,7 @@ class Store:
                     self._write_transactions(flagged)
                 if profile and profile.get("fingerprint"):
                     self._write_profile(profile["fingerprint"], profile)
+                self._rebuild_links()
                 job.state = ImportState.COMMITTED
                 job.document_id = document.document_id
                 job.transaction_count = len(transactions)
@@ -508,6 +634,7 @@ class Store:
                 )
             self.conn.execute("DELETE FROM transactions WHERE import_job_id = ?", (job.job_id,))
             self.conn.execute("DELETE FROM documents WHERE import_job_id = ?", (job.job_id,))
+            self._rebuild_links()
             job.state = ImportState.ROLLED_BACK
             job.updated_at = _now()
             self.conn.execute("UPDATE import_jobs SET state=?, updated_at=? WHERE job_id=?",
@@ -515,11 +642,15 @@ class Store:
         return len(ids)
 
 
-_CORRECTION_COLUMNS = ("category_source", "category_rule_id", "merchant_canonical", "merchant_source", "merchant_rule_id")
+_CORRECTION_COLUMNS = (
+    "category_source", "category_rule_id", "merchant_canonical", "merchant_source", "merchant_rule_id",
+    "economic_type_auto", "economic_type_source", "economic_type_rule_id",
+)
 
 
 def _correction_state(t: Transaction) -> tuple:
-    return (t.category, t.category_confidence, *(getattr(t, c) for c in _CORRECTION_COLUMNS))
+    return (t.category, t.category_confidence, t.economic_type, t.economic_type_confidence,
+            *(getattr(t, c) for c in _CORRECTION_COLUMNS))
 
 
 def _row_to_job(r: sqlite3.Row) -> ImportJob:

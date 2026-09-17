@@ -620,7 +620,35 @@
 
   // ------------------------------------------------------------------ transactions & corrections
 
-  const txnState = { offset: 0, categories: [], editing: null };
+  const txnState = { offset: 0, categories: [], types: [], editing: null };
+  const LINK_WORDS = {
+    refund: 'Refund', reimbursement: 'Reimbursement', transfer: 'Transfer between accounts', card_payment: 'Card bill payment',
+  };
+  const LINK_STATUS = { matched: ['good', 'Linked'], confirmed: ['good', 'You confirmed'], suggested: ['warn', 'Possible link'], rejected: ['info', 'Not related'] };
+
+  async function decideLink(id, decision) {
+    try {
+      await api('POST', `/api/links/${id}/decision`, { decision });
+      announce(decision === 'confirmed' ? 'Link confirmed.' : decision === 'rejected' ? 'Marked as not related.' : 'Your choice was undone.');
+    } catch (e) { announce(e.message); }
+    loadTransactions();
+  }
+
+  function linkLine(l) {
+    const [cls, word] = LINK_STATUS[l.status] || ['info', l.status];
+    const other = l.others.map((o) => `${o.description} (${o.direction === 'CREDIT' ? '+' : '−'}${money(o.amount, o.currency)}, ${niceDate(o.date)})`).join('; ');
+    const buttons = [];
+    if (l.status === 'suggested') {
+      buttons.push(h('button', { type: 'button', class: 'btn', text: 'Yes, related', onclick: () => decideLink(l.id, 'confirmed') }));
+    }
+    if (l.status !== 'rejected') {
+      buttons.push(h('button', { type: 'button', class: 'btn quiet', text: 'Not related', onclick: () => decideLink(l.id, 'rejected') }));
+    }
+    return h('div', { style: 'margin-top:.4rem' },
+      h('p', { style: 'margin:0' }, h('span', { class: `status ${cls}`, text: word }), ` ${LINK_WORDS[l.kind] || l.kind}: ${other}`),
+      h('p', { class: 'muted', style: 'margin:.1rem 0 0', text: l.reason }),
+      buttons.length ? h('div', { class: 'actions', style: 'margin-top:.3rem' }, ...buttons) : null);
+  }
   const PAGE = 50;
 
   function signedMoney(t) { return `${t.direction === 'CREDIT' ? '+' : '−'}${money(t.amount, t.currency)}`; }
@@ -638,6 +666,7 @@
     let data;
     try { data = await api('GET', `/api/transactions?${params}`); } catch (e) { list.replaceChildren(h('li', {}, errorBox(e.message))); return; }
     txnState.categories = data.categories;
+    txnState.types = data.types || [];
     fillCategoryFilter(data.categories);
     const items = data.transactions.map(txnItem);
     if (append) list.append(...items); else list.replaceChildren(...(items.length ? items : [h('li', { text: 'No transactions match.' })]));
@@ -645,6 +674,37 @@
     $('#txn-count').textContent = data.total ? `Showing ${txnState.offset} of ${plural(data.total, 'transaction')}.` : '';
     $('#txn-more').hidden = txnState.offset >= data.total;
     renderRules(data.rules);
+    loadLinks();
+  }
+
+  async function loadLinks() {
+    let data;
+    try { data = await api('GET', '/api/links'); } catch (e) { return; }
+    const suggested = data.links.filter((l) => l.status === 'suggested');
+    $('#links-box').hidden = !suggested.length;
+    $('#links-list').replaceChildren(...suggested.map((l) => h('li', {},
+      h('p', { style: 'margin:0', text: `${LINK_WORDS[l.kind] || l.kind}?` }),
+      h('ul', {}, ...l.members.map((m) => h('li', { text: `${m.description} — ${m.direction === 'CREDIT' ? '+' : '−'}${money(m.amount, m.currency)}, ${niceDate(m.date)}` }))),
+      h('p', { class: 'muted', text: l.reason }),
+      h('div', { class: 'actions', style: 'margin-top:.3rem' },
+        h('button', { type: 'button', class: 'btn primary', text: 'Yes, related', onclick: () => decideLink(l.id, 'confirmed') }),
+        h('button', { type: 'button', class: 'btn quiet', text: 'Not related', onclick: () => decideLink(l.id, 'rejected') })),
+    )));
+    const rec = data.recurring;
+    $('#recurring-list').replaceChildren(...(rec.length ? rec.map((r) => {
+      const d = r.details;
+      const rejected = r.status === 'rejected';
+      return h('li', {},
+        h('div', { class: 'row' }, h('strong', { text: d.name }), h('span', { class: 'txn-amount', text: `${d.direction === 'CREDIT' ? '+' : '−'}${money(d.typical_amount, d.currency)} ${d.cadence}` })),
+        h('p', { class: 'muted', style: 'margin:.2rem 0 0', text: rejected ? 'You said this isn’t a regular payment.' :
+          `${plural(d.count, 'time')} so far, last on ${niceDate(d.last_date)}. Next expected around ${niceDate(d.next_expected)}.` }),
+        d.amount_changed && !rejected ? h('p', { class: 'status warn', text: `Latest amount changed to ${money(d.last_amount, d.currency)}` }) : null,
+        d.possibly_stopped && !rejected ? h('p', { class: 'status warn', text: 'Hasn’t appeared when expected — it may have stopped' }) : null,
+        h('div', { class: 'actions', style: 'margin-top:.3rem' }, rejected
+          ? h('button', { type: 'button', class: 'btn quiet', text: 'Undo', onclick: () => decideLink(r.id, null) })
+          : h('button', { type: 'button', class: 'btn quiet', text: 'Not a regular payment', onclick: () => decideLink(r.id, 'rejected') })),
+      );
+    }) : [h('li', { class: 'muted', text: 'None found yet. It takes at least three similar payments on a regular schedule.' })]));
   }
 
   function fillCategoryFilter(categories) {
@@ -661,7 +721,9 @@
       li.replaceChildren(...[
         h('div', { class: 'row' }, h('strong', { text: t.merchant_name || t.description }), h('span', { class: 'txn-amount', text: signedMoney(t) })),
         h('p', { class: 'muted', style: 'margin:.2rem 0 0', text: [niceDate(t.date), t.merchant_name ? t.description : null, t.file].filter(Boolean).join(' · ') }),
-        h('p', { style: 'margin:.35rem 0 0', text: categoryLine(t) }),
+        h('p', { style: 'margin:.35rem 0 0', text: `Kind: ${t.type_label}${t.type_source === 'you' ? ' — you set this' : t.type_source === 'rule' ? ' — from your rule' : t.type_source === 'link' ? ' — linked to money from your own account' : t.type_unsure ? ' — my best guess, change it if wrong' : ''}.` }),
+        t.is_purchase || t.category ? h('p', { style: 'margin:.1rem 0 0', text: categoryLine(t) }) : null,
+        ...(t.links || []).map(linkLine),
         t.merchant_name ? h('p', { class: 'muted', style: 'margin:.1rem 0 0', text: `Merchant name “${t.merchant_name}” — ${t.why.merchant}.` }) : null,
         h('div', { class: 'actions', style: 'margin-top:.5rem' },
           h('button', { type: 'button', class: 'btn', text: 'Change', 'aria-label': `Change ${t.description}`, onclick: () => li.replaceChildren(editor(t, render)) })),
@@ -676,6 +738,7 @@
     const id = t.id.slice(0, 8);
     const alerts = h('div');
     const catInput = h('input', { type: 'text', id: `cat-${id}`, list: `cats-${id}`, value: t.category || '', autocomplete: 'off' });
+    const typeSelect = h('select', { id: `type-${id}` }, ...txnState.types.map((o) => h('option', { value: o.value, text: o.label, selected: o.value === t.economic_type })));
     const nameInput = h('input', { type: 'text', id: `name-${id}`, value: t.merchant_name || '', autocomplete: 'off', placeholder: 'For example: Swiggy' });
     const patternInput = h('input', { type: 'text', id: `pat-${id}`, value: t.suggested_pattern, autocomplete: 'off' });
     const preview = h('p', { class: 'muted indent', role: 'status' });
@@ -713,33 +776,41 @@
       h('button', { type: 'button', class: 'btn primary', text: 'Save', onclick: () => {
         const body = { scope: rule.checked ? 'rule' : 'one' };
         const cat = catInput.value.trim(), name = nameInput.value.trim();
-        if (t.is_purchase && cat !== (t.category || '')) body.category = cat || null;
+        const type = typeSelect.value;
+        const willBePurchase = type === 'PURCHASE';
+        if (type !== t.economic_type) body.economic_type = type;
+        if (willBePurchase && cat !== (t.category || '')) body.category = cat || null;
         if (name !== (t.merchant_name || '')) body.merchant_name = name || null;
         if (rule.checked) {
           body.pattern = patternInput.value;
-          if (t.is_purchase && cat && body.category === undefined) body.category = cat;
+          if (willBePurchase && cat && body.category === undefined) body.category = cat;
           if (name && body.merchant_name === undefined) body.merchant_name = name;
         }
         if (Object.keys(body).length === 1) { alerts.replaceChildren(errorBox('Nothing has changed yet.')); return; }
         save(body);
       } }),
       h('button', { type: 'button', class: 'btn quiet', text: 'Cancel', onclick: close }),
-      (t.category_source === 'you' || t.merchant_source === 'you')
+      (t.category_source === 'you' || t.merchant_source === 'you' || t.type_source === 'you')
         ? h('button', { type: 'button', class: 'btn quiet', text: 'Go back to automatic', onclick: () => save({
           scope: 'one', ...(t.category_source === 'you' ? { category: null } : {}), ...(t.merchant_source === 'you' ? { merchant_name: null } : {}),
+          ...(t.type_source === 'you' ? { economic_type: null } : {}),
         }) })
         : null,
     );
+
+    const catBox = h('p', {}, h('label', { class: 'field', for: `cat-${id}`, text: 'Category (purchases only)' }), catInput,
+      h('datalist', { id: `cats-${id}` }, ...txnState.categories.map((c) => h('option', { value: c }))));
+    const syncCat = () => { catBox.hidden = typeSelect.value !== 'PURCHASE'; };
+    typeSelect.addEventListener('change', syncCat);
+    syncCat();
 
     return h('div', {},
       h('div', { class: 'row' }, h('strong', { text: t.description }), h('span', { class: 'txn-amount', text: signedMoney(t) })),
       h('p', { class: 'muted', style: 'margin:.2rem 0 0', text: [niceDate(t.date), t.file].filter(Boolean).join(' · ') }),
       h('div', { class: 'editor' },
         alerts,
-        t.is_purchase
-          ? h('p', {}, h('label', { class: 'field', for: `cat-${id}`, text: 'Category' }), catInput,
-            h('datalist', { id: `cats-${id}` }, ...txnState.categories.map((c) => h('option', { value: c }))))
-          : h('p', { class: 'muted', text: `${categoryLine(t)} Only purchases have a category.` }),
+        h('p', {}, h('label', { class: 'field', for: `type-${id}`, text: 'What kind of transaction is this?' }), typeSelect),
+        catBox,
         h('p', {}, h('label', { class: 'field', for: `name-${id}`, text: 'Merchant name (optional)' }), nameInput),
         h('fieldset', {}, h('legend', { text: 'Apply this to' }),
           h('label', { class: 'choice' }, one, 'Only this transaction'),
@@ -754,7 +825,7 @@
     const list = $('#rules-list');
     if (!rules.length) { list.replaceChildren(h('li', { class: 'muted', text: 'No rules yet. Choose “Every transaction from the same place” when you change one.' })); return; }
     list.replaceChildren(...rules.map((r) => {
-      const sets = [r.category ? `category ${r.category}` : null, r.merchant_name ? `merchant name “${r.merchant_name}”` : null].filter(Boolean).join(' and ');
+      const sets = [r.type_label ? `kind “${r.type_label}”` : null, r.category ? `category ${r.category}` : null, r.merchant_name ? `merchant name “${r.merchant_name}”` : null].filter(Boolean).join(' and ');
       return h('li', {},
         h('p', { style: 'margin:0', text: `Descriptions containing “${r.pattern}” get ${sets}.` }),
         h('p', { class: 'muted', style: 'margin:.2rem 0 0', text: `Used for ${plural(r.applied_to, 'transaction')} right now.` }),

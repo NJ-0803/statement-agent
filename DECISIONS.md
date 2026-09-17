@@ -1710,3 +1710,57 @@ purchase.
 transfer), rules on amount or account, rule import/export, and per-person rules (still one local ledger).
 
 410 tests passing (24 new in `tests/test_corrections.py`).
+
+## 36. Income type, correcting the kind, and economic event linking (`NOT_IMPLEMENTED.md` §A)
+
+**Income.** There was no income type: every spreadsheet credit started as `REFUND`, and only reversal,
+cashback, reimbursement and card-payment words changed it, so a salary was a "refund". Now
+`refine_economic_type` knows the document type. Refund words keep `REFUND`, and card-statement credits stay
+refunds or payments. Salary/payroll/pension/dividend words give `INCOME`, and interest gives `INTEREST`. On
+a bank statement, a transfer-rail credit (NEFT/IMPS/RTGS/UPI) is `TRANSFER` (confidence 0.7), and anything
+else is `INCOME` at confidence 0.5, shown as "my best guess". Income rows are now duplicate-check candidates
+too.
+
+**Correcting the kind.** `economic_type_auto` records what reading decided and `economic_type_source`
+records who decided (`auto` | `rule` | `you` | `link`). Rules can now set a kind, and one-row changes can
+too; "go back to automatic" and removing a rule restore the recorded automatic kind. A row that stops being
+a purchase loses its automatic category.
+
+**Linking (`linking.py`).** The whole ledger is rebuilt after every commit, undo, correction and decision,
+inside the same database transaction. Matchers:
+- **Refund/reversal → purchase:** earlier purchase, same currency, within 120 days (15 for reversals), with
+  enough of its amount not already refunded. A match needs a shared reference number or a merchant
+  similarity; **amount alone never links**. It counts as *matched* only with a shared reference, or with the
+  same merchant and the exact amount, and only when no other candidate scores close. Otherwise, including
+  partial refunds, it's *suggested*.
+- **Reimbursement → expense(s):** one earlier purchase of exactly that amount, or exactly one pair that adds
+  up to it. Always *suggested*, because only amounts match.
+- **Transfer between own accounts:** same amount and currency, different account (the row's account, else
+  the document's label, else the document), within 3 days, and a unique pairing on both sides. It's
+  *matched* when the money-out row is a transfer. A matched or confirmed link retypes the money-in row as
+  `TRANSFER` (source `link`), so money moved from savings isn't income. Undoing the link restores the
+  recorded type.
+- **Card bill payment → the card's "payment received":** unique pairing, within 7 days, *matched*.
+- **Recurring:** at least 3 rows with the same name and direction, a weekly/monthly/quarterly/yearly cadence
+  (one missed occurrence allowed), and amounts within 25% of the median. Flags a changed latest amount and
+  a payment that's overdue past a grace period ("may have stopped").
+
+Your decisions are stored by link signature in `link_decisions`, so a "yes" or "not related" survives
+rebuilds and re-imports. You can link two rows yourself, and "not related" on your own link deletes it.
+Only matched or confirmed links count: the new `net_spending` tool subtracts linked refunds from their
+purchases, and lists suggested and unlinked refunds separately so the answer can disclose them.
+`linked_transactions` and `recurring_payments` are new agent tools, and prompt rule 7a covers income and
+links.
+
+UI: each transaction shows its kind (and why) plus its links with "Yes, related" / "Not related"; a "Links
+to check" list; a "Regular payments and income" list with "Not a regular payment"; and a kind selector in
+the editor.
+
+**Honest scope:** on `dataset_public/` this finds nothing: it has no refunds or transfers, Netflix appears
+only twice, and the card payments vary too much to count as regular. That's the correct result, and all
+positive cases are synthetic (`tests/test_linking.py`). Deferred for time: EMI series linked to their
+original purchase, FX markup fee ↔ foreign charge, and pending ↔ posted. The Chrome extension was not
+connected for this change, so the UI was checked through its API responses and a syntax check, not in a
+browser.
+
+432 tests passing (22 new in `tests/test_linking.py`).

@@ -954,3 +954,113 @@ def resolve_date(raw: str) -> dict:
         "assumption": parsed.assumption,
         "raw": raw,
     }
+
+
+# ---------------------------------------------------------------------------
+# Linked transactions (linking.py) — refunds, reimbursements, transfers, card payments, recurring
+# ---------------------------------------------------------------------------
+
+def _member_view(t: Transaction | None, tid: str, role: str) -> dict:
+    if t is None:
+        return {"transaction_id": tid, "role": role, "missing": True}
+    return {
+        "transaction_id": tid, "role": role, "date": t.transaction_date.isoformat() if t.transaction_date else None,
+        "description": t.description_raw, "amount": str(t.amount), "currency": t.currency,
+        "direction": t.direction.value, "economic_type": t.economic_type.value,
+        "source_file": t.source.file_path if t.source else "",
+    }
+
+
+def _event_view(e, by_id: dict) -> dict:
+    return {
+        "event_id": e.event_id, "kind": e.kind.value, "status": e.status.value,
+        "counted": e.status.value in ("matched", "confirmed"), "reason": e.reason, "details": e.details,
+        "members": [_member_view(by_id.get(m.transaction_id), m.transaction_id, m.role) for m in e.members],
+    }
+
+
+def linked_transactions(ledger: list[Transaction], events: list, *, kind: str | None = None,
+                        status: str | None = None, transaction_id: str | None = None, limit: int = 50) -> dict:
+    """Links between related transactions. `counted` links (matched/confirmed) are used in net figures;
+    `suggested` ones are NOT — mention them as unconfirmed; `rejected` ones are hidden unless asked for."""
+    by_id = {t.transaction_id: t for t in ledger}
+    rows = [
+        e for e in events
+        if e.kind.value != "recurring"
+        and (kind is None or e.kind.value == kind)
+        and (status is None and e.status.value != "rejected" or e.status.value == status)
+        and (transaction_id is None or any(m.transaction_id == transaction_id for m in e.members))
+    ]
+    return {"total_matched": len(rows), "truncated": len(rows) > limit,
+            "links": [_event_view(e, by_id) for e in rows[:limit]]}
+
+
+def recurring_payments(ledger: list[Transaction], events: list, *, direction: str | None = None) -> dict:
+    """Regular payments (and regular income) found in the ledger, with cadence, usual amount, next expected
+    date, and flags for a changed amount or a payment that seems to have stopped."""
+    by_id = {t.transaction_id: t for t in ledger}
+    rows = [e for e in events if e.kind.value == "recurring" and e.status.value != "rejected"
+            and (direction is None or e.details.get("direction") == direction)]
+    out = []
+    for e in rows:
+        view = _event_view(e, by_id)
+        view["members"] = view["members"][-3:]  # the latest few are enough to cite
+        out.append(view)
+    return {"count": len(out), "recurring": out}
+
+
+def net_spending(ledger: list[Transaction], events: list, *, category: str | None = None,
+                 date_from: date | None = None, date_to: date | None = None, currency: str | None = None,
+                 group_by: str | None = None) -> dict:
+    """Purchases minus the refunds LINKED to them (matched or confirmed links only), per currency. A refund
+    counts against its purchase's category and month, wherever the refund itself landed. Refunds that are
+    only suggested, or not linked to any purchase, are listed separately and NOT subtracted."""
+    from ..linking import counted_refunds
+
+    refunds = counted_refunds(events)
+    by_id = {t.transaction_id: t for t in ledger}
+    purchases = [
+        t for t in ledger
+        if t.economic_type == EconomicType.PURCHASE and _is_clean(t)
+        and (category is None or t.category == category)
+        and (date_from is None and date_to is None or _in_range(t, date_from, date_to))
+        and (currency is None or t.currency == currency)
+    ]
+    totals: dict[str, dict] = {}
+    groups: dict[str, dict] = {}
+    applied = []
+    for p in purchases:
+        refunded = sum((a for _, a in refunds.get(p.transaction_id, [])), Decimal("0"))
+        tot = totals.setdefault(p.currency, {"gross": Decimal("0"), "refunded": Decimal("0")})
+        tot["gross"] += p.amount
+        tot["refunded"] += refunded
+        for rid, amount in refunds.get(p.transaction_id, []):
+            applied.append({"purchase": _member_view(p, p.transaction_id, "purchase"),
+                            "refund": _member_view(by_id.get(rid), rid, "refund"), "amount": str(amount)})
+        if group_by:
+            if group_by == "month":
+                key = p.transaction_date.strftime("%Y-%m") if p.transaction_date else "UNKNOWN"
+            elif group_by == "merchant":
+                key = p.merchant_canonical or p.merchant_normalized or p.merchant_raw or "UNKNOWN"
+            else:
+                key = p.category or "UNCATEGORIZED"
+            g = groups.setdefault(key, {}).setdefault(p.currency, Decimal("0"))
+            groups[key][p.currency] = g + p.amount - refunded
+
+    linked_refund_ids = {rid for pairs in refunds.values() for rid, _ in pairs}
+    suggested = [e for e in events if e.kind.value == "refund" and e.status.value == "suggested"]
+    unlinked = [
+        t for t in ledger
+        if t.economic_type in (EconomicType.REFUND, EconomicType.REVERSAL) and t.transaction_id not in linked_refund_ids
+        and (date_from is None and date_to is None or _in_range(t, date_from, date_to))
+        and (currency is None or t.currency == currency)
+    ]
+    return {
+        "per_currency": {c: {"gross_purchases": str(v["gross"]), "linked_refunds": str(v["refunded"]),
+                             "net_spending": str(v["gross"] - v["refunded"])} for c, v in sorted(totals.items())},
+        "group_breakdown": {k: {c: str(a) for c, a in v.items()} for k, v in groups.items()} if group_by else None,
+        "refunds_applied": applied[:50],
+        "suggested_refund_links_not_applied": [_event_view(e, by_id) for e in suggested[:20]],
+        "unlinked_refunds_not_applied": [_member_view(t, t.transaction_id, "refund") for t in unlinked[:20]],
+        "purchase_count": len(purchases),
+    }

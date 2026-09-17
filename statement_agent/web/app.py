@@ -18,6 +18,9 @@ Imports are jobs (see ingest/pipeline.py), exposed as a small JSON API:
     GET    /api/rules                    your correction rules
     POST   /api/rules/preview            which rows a rule with these words would cover
     DELETE /api/rules/<id>               remove a rule; affected rows go back to automatic
+    GET    /api/links                    linked transactions (refunds, transfers, …) and regular payments
+    POST   /api/links                    link a money-out row and a money-in row yourself
+    POST   /api/links/<id>/decision      yes / not related / undo your decision
 
 Reading a file (OCR in particular) runs on a small background worker, not in the request thread;
 the browser polls the job. Every /api/ error is JSON, including 404/405/413. State-changing API
@@ -362,9 +365,22 @@ def create_app(db_path: str = "ledger.db", *, upload_dir: str = UPLOAD_DIR, run_
         finally:
             store.close()
 
-    def _txn_view(t, rules_by_id):
+    def _txn_view(t, rules_by_id, links_by_txn=None, by_id=None):
         src = t.source
+        links = []
+        for e in (links_by_txn or {}).get(t.transaction_id, []):
+            others = [by_id[m.transaction_id] for m in e.members if m.transaction_id != t.transaction_id and m.transaction_id in by_id]
+            links.append({
+                "id": e.event_id, "kind": e.kind.value, "status": e.status.value, "reason": e.reason,
+                "others": [{"date": o.transaction_date.isoformat() if o.transaction_date else None,
+                            "description": o.description_raw, "amount": str(o.amount), "currency": o.currency,
+                            "direction": o.direction.value} for o in others[:3]],
+            })
         return {
+            "economic_type": t.economic_type.value,
+            "type_label": ledger_edits.TYPE_LABELS.get(t.economic_type.value, t.economic_type.value.title()),
+            "type_source": t.economic_type_source, "type_unsure": (t.economic_type_confidence or 1.0) < 1.0,
+            "links": links,
             "id": t.transaction_id,
             "date": t.transaction_date.isoformat() if t.transaction_date else None,
             "description": t.description_raw, "amount": str(t.amount), "currency": t.currency,
@@ -376,10 +392,71 @@ def create_app(db_path: str = "ledger.db", *, upload_dir: str = UPLOAD_DIR, run_
             "file": os.path.basename(src.file_path) if src and src.file_path else None,
         }
 
+    def _links_by_txn(events):
+        out = {}
+        for e in events:
+            if e.kind.value == "recurring" or e.status.value == "rejected":
+                continue
+            for m in e.members:
+                out.setdefault(m.transaction_id, []).append(e)
+        return out
+
+    def _event_json(e, by_id):
+        return {
+            "id": e.event_id, "kind": e.kind.value, "status": e.status.value, "reason": e.reason,
+            "details": e.details, "source": e.source,
+            "members": [{"id": m.transaction_id, "role": m.role,
+                         **({"date": t.transaction_date.isoformat() if t.transaction_date else None,
+                             "description": t.description_raw, "amount": str(t.amount), "currency": t.currency,
+                             "direction": t.direction.value} if (t := by_id.get(m.transaction_id)) else {})}
+                        for m in e.members],
+        }
+
+    @app.route("/api/links", methods=["GET"])
+    def list_links():
+        if not os.path.exists(app.config["DB_PATH"]):
+            return jsonify({"links": [], "recurring": []})
+
+        def run(store):
+            by_id = {t.transaction_id: t for t in store.all_transactions()}
+            events = store.list_events()
+            links = [e for e in events if e.kind.value != "recurring"]
+            recurring = [e for e in events if e.kind.value == "recurring"]
+            order = {"suggested": 0, "matched": 1, "confirmed": 2, "rejected": 3}
+            links.sort(key=lambda e: order[e.status.value])
+            return jsonify({"links": [_event_json(e, by_id) for e in links],
+                            "recurring": [_event_json(e, by_id) for e in recurring]})
+        return _with_store(run)
+
+    @app.route("/api/links", methods=["POST"])
+    def post_link():
+        data = _json_body()
+        if data is None or not all(isinstance(data.get(k), str) for k in ("kind", "out_id", "in_id")):
+            return _error("kind, out_id and in_id are required", 400)
+
+        def run(store):
+            event = ledger_edits.link_manually(store, data["kind"], data["out_id"], data["in_id"])["event"]
+            return jsonify({"link": _event_json(event, {t.transaction_id: t for t in store.all_transactions()})})
+        return _with_store(run)
+
+    @app.route("/api/links/<event_id>/decision", methods=["POST"])
+    def post_link_decision(event_id):
+        data = _json_body()
+        if data is None or "decision" not in data:
+            return _error("decision is required", 400)
+
+        def run(store):
+            event = ledger_edits.decide_link(store, event_id, data["decision"])["event"]
+            by_id = {t.transaction_id: t for t in store.all_transactions()}
+            return jsonify({"link": _event_json(event, by_id) if event else None})
+        return _with_store(run)
+
     def _rule_view(rule, ledger):
-        covered = [t for t in ledger if t.category_rule_id == rule.rule_id or t.merchant_rule_id == rule.rule_id]
+        covered = [t for t in ledger if rule.rule_id in (t.category_rule_id, t.merchant_rule_id, t.economic_type_rule_id)]
         return {
             "id": rule.rule_id, "pattern": rule.pattern, "category": rule.category,
+            "economic_type": rule.economic_type,
+            "type_label": ledger_edits.TYPE_LABELS.get(rule.economic_type) if rule.economic_type else None,
             "merchant_name": rule.merchant_name, "updated_at": rule.updated_at,
             "applied_to": len(covered), "matches": sum(1 for t in ledger if rule_matches(rule, t)),
         }
@@ -393,6 +470,8 @@ def create_app(db_path: str = "ledger.db", *, upload_dir: str = UPLOAD_DIR, run_
             rules = store.list_rules()
             by_id = {r.rule_id: r for r in rules}
             ledger = store.all_transactions()
+            txn_by_id = {t.transaction_id: t for t in ledger}
+            links_by_txn = _links_by_txn(store.list_events())
             q = (request.args.get("q") or "").strip().lower()
             category = request.args.get("category") or ""
             rows = [
@@ -409,8 +488,9 @@ def create_app(db_path: str = "ledger.db", *, upload_dir: str = UPLOAD_DIR, run_
                 return _error("limit and offset must be numbers", 400)
             return jsonify({
                 "total": len(rows),
-                "transactions": [_txn_view(t, by_id) for t in rows[offset:offset + limit]],
+                "transactions": [_txn_view(t, by_id, links_by_txn, txn_by_id) for t in rows[offset:offset + limit]],
                 "categories": ledger_edits.category_choices(store),
+                "types": [{"value": k, "label": v} for k, v in ledger_edits.TYPE_LABELS.items()],
                 "rules": [_rule_view(r, ledger) for r in rules],
             })
         return _with_store(run)
@@ -424,9 +504,9 @@ def create_app(db_path: str = "ledger.db", *, upload_dir: str = UPLOAD_DIR, run_
         data = _json_body()
         if data is None:
             return _error("Expected a JSON object.", 400)
-        fields = {k: data[k] for k in ("category", "merchant_name") if k in data}
+        fields = {k: data[k] for k in ("category", "merchant_name", "economic_type") if k in data}
         if any(v is not None and not isinstance(v, str) for v in fields.values()):
-            return _error("category and merchant_name must be text or null", 400)
+            return _error("category, merchant_name and economic_type must be text or null", 400)
         scope = data.get("scope", "one")
 
         def run(store):
@@ -440,7 +520,9 @@ def create_app(db_path: str = "ledger.db", *, upload_dir: str = UPLOAD_DIR, run_
             else:
                 return _error("scope must be 'one' or 'rule'", 400)
             by_id = {r.rule_id: r for r in store.list_rules()}
-            body = {"changed": result["changed"], "transaction": _txn_view(result["transaction"], by_id)}
+            txn_by_id = {t.transaction_id: t for t in store.all_transactions()}
+            body = {"changed": result["changed"],
+                    "transaction": _txn_view(result["transaction"], by_id, _links_by_txn(store.list_events()), txn_by_id)}
             if result.get("rule"):
                 body["rule"] = _rule_view(result["rule"], store.all_transactions())
             return jsonify(body)
@@ -483,6 +565,7 @@ def create_app(db_path: str = "ledger.db", *, upload_dir: str = UPLOAD_DIR, run_
         store = _store()
         ledger = store.all_transactions()
         documents = store.all_documents_as_dicts()
+        events = store.list_events()
         store.close()
 
         if not ledger:
@@ -491,7 +574,7 @@ def create_app(db_path: str = "ledger.db", *, upload_dir: str = UPLOAD_DIR, run_
         from ..agent.loop import run_agent
 
         try:
-            result = run_agent(question, ledger, documents=documents)
+            result = run_agent(question, ledger, documents=documents, events=events)
         except Exception as e:  # noqa: BLE001 - surface a clean API error, never a stack trace to the browser
             import anthropic
 

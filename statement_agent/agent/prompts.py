@@ -187,6 +187,13 @@ VERIFIED_WITH_CAVEATS if there's a verified number but some flagged uncertainty;
 if the ledger genuinely doesn't have what's needed to answer (out-of-range dates, no matching transactions, \
 a document that failed to extract, etc.) — in that case, say so honestly rather than guessing.
 
+7a. Money in has kinds: INCOME (salary, pension, dividends), REFUND, REVERSAL, TRANSFER (between the \
+person's own accounts or from other people), CREDIT_CARD_PAYMENT, CASHBACK, REIMBURSEMENT, INTEREST. For \
+"how much did I earn/receive", use aggregate_spending with economic_types=["INCOME"] — never count \
+transfers or refunds as income. Related rows are linked (linked_transactions): use net_spending for \
+spending after refunds, recurring_payments for regular payments or income. Only matched/confirmed links \
+are reliable; a suggested link must be described as possible and unconfirmed, never as fact.
+
 8. Before each tool call (or small group of tool calls made together), write one brief sentence stating \
 why you're calling it — e.g. "Checking dataset_coverage first since this asks about a specific month" or \
 "Netflix and Spotify both look recurring; pulling their full history to check for price changes." This \

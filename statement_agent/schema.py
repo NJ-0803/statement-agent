@@ -16,6 +16,7 @@ class EconomicType(str, Enum):
     """
 
     PURCHASE = "PURCHASE"
+    INCOME = "INCOME"  # salary, pension, dividends, other money earned — not a refund of earlier spending
     REFUND = "REFUND"
     TRANSFER = "TRANSFER"
     CREDIT_CARD_PAYMENT = "CREDIT_CARD_PAYMENT"
@@ -141,6 +142,11 @@ class Transaction:
     # answers; merchant_raw stays the citation value and merchant_normalized still drives duplicate checks
     merchant_source: str | None = None  # "rule" | "you" | None
     merchant_rule_id: str | None = None
+    # Economic type provenance: economic_type_auto is what reading + keyword refinement decided, kept so a
+    # removed rule or undone link can put the row back; economic_type_source is "auto" | "rule" | "you" | "link".
+    economic_type_auto: str | None = None
+    economic_type_source: str | None = None
+    economic_type_rule_id: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +247,48 @@ class CorrectionRule:
     pattern: str
     category: str | None = None
     merchant_name: str | None = None
+    economic_type: str | None = None  # an EconomicType value, e.g. "INCOME" or "TRANSFER"
     created_at: str = ""
     updated_at: str = ""
     source_transaction_id: str | None = None  # the row the person was looking at when they made the rule
+
+
+# ---------------------------------------------------------------------------
+# Economic events — related transactions linked into one story (linking.py)
+# ---------------------------------------------------------------------------
+
+class EventKind(str, Enum):
+    REFUND = "refund"  # a refund/reversal credit and the purchase it gives money back for
+    REIMBURSEMENT = "reimbursement"  # money paid back to you and the expense(s) it covers
+    TRANSFER = "transfer"  # money leaving one of your accounts and arriving in another
+    CARD_PAYMENT = "card_payment"  # a bank-side card bill payment and the card's "payment received"
+    RECURRING = "recurring"  # a regular payment or income
+
+
+class EventStatus(str, Enum):
+    MATCHED = "matched"  # strong evidence; counted, and you can say "not related"
+    SUGGESTED = "suggested"  # plausible; NOT counted until you confirm
+    CONFIRMED = "confirmed"  # you said yes (or linked it yourself)
+    REJECTED = "rejected"  # you said no; kept so the same link isn't suggested again
+
+
+COUNTED_EVENT_STATUSES = {EventStatus.MATCHED, EventStatus.CONFIRMED}
+
+
+@dataclass
+class EventMember:
+    transaction_id: str
+    role: str  # purchase | refund | expense | reimbursement | out | in | payment | occurrence
+
+
+@dataclass
+class EconomicEvent:
+    event_id: str
+    kind: EventKind
+    status: EventStatus
+    confidence: float
+    reason: str  # plain language: why these rows are linked
+    members: list[EventMember]
+    signature: str  # stable identity across rebuilds, so a decision you made sticks
+    details: dict = field(default_factory=dict)  # kind-specific: amounts, cadence, next expected date, …
+    source: str = "auto"  # "auto" | "you"
