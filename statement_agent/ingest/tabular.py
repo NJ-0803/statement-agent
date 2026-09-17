@@ -19,6 +19,8 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from ..normalize import DocumentDateResolver, normalize_amount
+from .confidence import set_field
+from .statement_totals import StatedFigures, read_figures
 from ..schema import (
     AmountModel, Direction, Document, EconomicType, ExtractionMethod, IssueSeverity, RawTransactionCandidate,
     SourceRef, Transaction, ValidationIssue,
@@ -33,6 +35,7 @@ _ZERO_LIKE = {"", "-", "0", "0.0", "0.00", "0,00", "nil"}
 _EXPLICIT_SIGN_RE = re.compile(r"^\s*[-(]|(?:CR|DR|-)\s*$", re.IGNORECASE)
 _PREAMBLE_FIGURE_RE = re.compile(r"([-(]?\s*(?:₹|Rs\.?|INR)?\s*\d[\d,]*(?:[.,]\d{1,2})?\)?(?:\s*(?:CR|DR))?)", re.IGNORECASE)
 _TEXT_ONLY_ROLES = {"description", "notes", "reference"}
+_TOTAL_ROW_RE = re.compile(r"^\s*(?:grand\s+)?totals?\s*:?\s*$", re.IGNORECASE)
 
 
 @dataclass
@@ -104,6 +107,7 @@ def normalize_table(
     for _, cells in table.rows:
         resolver.observe(get(cells, "date"))
     resolver.resolve_convention()
+    resolver_has_evidence = resolver._convention is not None
     if mapping.date_order_source == "user":
         resolver._convention = mapping.date_order
 
@@ -117,9 +121,11 @@ def normalize_table(
     assumed_currency_used = ambiguous_date_used = False
     last_txn_candidate: RawTransactionCandidate | None = None
     stated_opening = stated_closing = None
+    stated = StatedFigures()
 
     for _, cells in table.preamble:
         joined = " ".join(c for c in cells if c)
+        read_figures([joined], into=stated)
         for regex in (OPENING_BALANCE_RE, CLOSING_BALANCE_RE):
             if regex.search(joined):
                 # the figure may sit in its own cell or share one with the label ("Opening Balance: 6,000.00")
@@ -158,13 +164,19 @@ def normalize_table(
         def any_cell(regex):  # per cell: a summary label usually sits after the date, not at the row's start
             return any(regex.search(c) for c in cells if c)
 
-        if any_cell(SUMMARY_ROW_RE) and (not raw_date or not has_money):
+        if any_cell(SUMMARY_ROW_RE) and (not raw_date or not has_money or SUMMARY_ROW_RE.search(raw_date)):
             balance_raw = get(cells, "balance") or next((v for v in money_raw.values() if v), "")
             parsed_bal = parse_money(balance_raw, decimal_separator=mapping.decimal_separator, default_currency=doc_currency) if balance_raw else None
             if parsed_bal and any_cell(OPENING_BALANCE_RE) and stated_opening is None:
                 stated_opening = parsed_bal.amount
             if parsed_bal and any_cell(CLOSING_BALANCE_RE):
                 stated_closing = parsed_bal.amount
+            read_figures([" ".join(c for c in cells if c)], into=stated)
+            if any_cell(_TOTAL_ROW_RE) and model == AmountModel.DEBIT_CREDIT.value:
+                # a bare "Total" row under money-out / money-in columns states both totals
+                for role, figure in (("debit", "total_debits"), ("credit", "total_credits")):
+                    if money_raw[role].lower() not in _ZERO_LIKE:
+                        stated.add(figure, money_raw[role])
             cand.reason = "summary line (opening/closing balance or total), not a transaction"
             continue
 
@@ -189,23 +201,29 @@ def normalize_table(
             cand.reason = cand.reason or reason
 
         parsed_date = None
+        date_reason = "date_unambiguous"
         if not raw_date:
             fail("missing_date", f"Row {row_no} has an amount but no date.", "Leave this row out, or fix the file and add it again.", "missing date", "date")
         elif mapping.excel_serial_dates and re.fullmatch(r"\d{5}(?:\.0+)?", raw_date):
             parsed_date = date(1899, 12, 30) + timedelta(days=int(float(raw_date)))
-            date_conf = 1.0
+            date_reason = "date_excel_serial"
         else:
             pd = resolver.parse(raw_date)
             if pd.value is None:
                 fail("unparseable_date", f"I couldn't read the date '{raw_date}' on row {row_no}.", "Leave this row out, or check which column holds the date.", f"unparseable date: {raw_date!r}", "date")
             else:
-                parsed_date, date_conf = pd, pd.confidence
+                parsed_date = pd
                 if pd.confidence < 1.0:
-                    ambiguous_date_used = True
+                    if mapping.date_order_source == "user":
+                        date_reason = "date_order_confirmed"
+                    elif resolver_has_evidence:
+                        date_reason = "date_order_from_document"
+                    else:
+                        date_reason, ambiguous_date_used = "date_order_default", True
 
         parsed_amount = None
         direction = None
-        direction_conf = 1.0
+        direction_reason = "direction_sign"
         if model == AmountModel.DEBIT_CREDIT.value:
             d_raw, c_raw = money_raw["debit"], money_raw["credit"]
             d_set, c_set = d_raw.lower() not in _ZERO_LIKE, c_raw.lower() not in _ZERO_LIKE
@@ -217,6 +235,7 @@ def normalize_table(
                 raw_amount = d_raw if d_set else c_raw
                 parsed_amount = parse_money(raw_amount, decimal_separator=mapping.decimal_separator, default_currency=doc_currency)
                 direction = Direction.DEBIT if d_set else Direction.CREDIT
+                direction_reason = "direction_column"
                 if parsed_amount is None:
                     fail("unparseable_amount", f"I couldn't read the amount '{raw_amount}' on row {row_no}.", "Leave this row out.", f"unparseable amount: {raw_amount!r}", "amount")
         else:
@@ -239,14 +258,15 @@ def normalize_table(
                                     f"On row {row_no} the amount's sign says money {'in' if direction == Direction.CREDIT else 'out'}, but the type column says '{get(cells, 'marker')}'. I went with the type column.",
                                     "Confirm this is right, or leave the row out.", target=key, field_name="direction", evidence=evidence,
                                 ))
-                            direction = Direction(marked)
-                        else:
-                            direction_conf = 0.8
+                            direction, direction_reason = Direction(marked), "direction_marker"
+                        elif not signed_amount[key]:
+                            direction_reason = "direction_unmarked"
                     elif model == AmountModel.AMOUNT_WITH_BALANCE.value:
-                        direction = None  # settled only by the balance pass below
+                        direction, direction_reason = None, None  # settled only by the balance pass below
 
         row_currency = None
         currency_inferred = False
+        currency_reason = "currency_row"
         if parsed_amount is not None:
             ccy_cell = get(cells, "currency")
             if ccy_cell:
@@ -254,10 +274,12 @@ def normalize_table(
                 if row_currency is None:
                     fail("unknown_currency", f"Row {row_no} has a currency I don't support: '{ccy_cell}'.", "Leave this row out.", f"unsupported currency: {ccy_cell!r}", "currency")
             if row_currency is None and not parsed_amount.currency_inferred:
-                row_currency = parsed_amount.currency
+                row_currency, currency_reason = parsed_amount.currency, "currency_symbol"
             if row_currency is None:
                 row_currency = doc_currency
                 currency_inferred = mapping.currency is None
+                currency_reason = ("currency_assumed" if currency_inferred
+                                   else "currency_confirmed" if mapping.currency_source == "user" else "currency_file")
 
         if row_issues and any(i.severity == IssueSeverity.BLOCKING for i in row_issues):
             cand.outcome = "issue"
@@ -266,7 +288,7 @@ def normalize_table(
         issues.extend(row_issues)
 
         if key in decisions.directions:
-            direction, direction_conf = Direction(decisions.directions[key]), 1.0
+            direction, direction_reason = Direction(decisions.directions[key]), "direction_confirmed"
 
         balance_after = None
         bal_raw = get(cells, "balance")
@@ -298,15 +320,16 @@ def normalize_table(
             value_date=value_date,
             reference_id=get(cells, "reference") or None,
             balance_after=balance_after,
-            field_confidence={
-                "date": date_conf, "amount": 1.0, "direction": direction_conf,
-                "currency": 0.5 if currency_inferred else 1.0,
-            },
             source=SourceRef(
                 file_path=path, file_hash=fhash, row=row_no, raw_text=str(cell_map),
                 extraction_method=extraction_method, extraction_confidence=1.0,
             ),
         )
+        set_field(txn, "date", date_reason)
+        set_field(txn, "amount", "amount_read")
+        if direction_reason:
+            set_field(txn, "direction", direction_reason)
+        set_field(txn, "currency", currency_reason)
         if not isinstance(parsed_date, date) and parsed_date.confidence < 1.0:
             txn.notes = (txn.notes + f" | date assumption: {parsed_date.assumption}").strip(" |")
         if currency_inferred:
@@ -323,6 +346,13 @@ def normalize_table(
     issues.extend(balance_issues)
     if stated_closing is not None:
         document.closing_balance = stated_closing
+    if stated_opening is not None:
+        document.opening_balance = stated_opening
+    for figure, attr in (("total_debits", "stated_total_debits"), ("total_credits", "stated_total_credits")):
+        if figure in stated.values:
+            parsed_total = parse_money(stated.values[figure], decimal_separator=mapping.decimal_separator, default_currency=doc_currency)
+            setattr(document, attr, parsed_total.amount if parsed_total else None)
+    document.parse_warnings.extend(w for w in stated.warnings() if "balance" not in w)
 
     if assumed_currency_used:
         issues.append(_issue(
@@ -396,9 +426,11 @@ def _balance_pass(transactions, candidates, model, decisions, stated_opening, do
             if cand.key in decisions.directions:
                 pass
             elif prev_bal is not None and t.balance_after is not None and step_ok(prev_bal, t, Direction.DEBIT):
-                t.direction, t.field_confidence["direction"] = Direction.DEBIT, 0.9
+                t.direction = Direction.DEBIT
+                set_field(t, "direction", "direction_from_balance")
             elif prev_bal is not None and t.balance_after is not None and step_ok(prev_bal, t, Direction.CREDIT):
-                t.direction, t.field_confidence["direction"] = Direction.CREDIT, 0.9
+                t.direction = Direction.CREDIT
+                set_field(t, "direction", "direction_from_balance")
             else:
                 why = "it's the first row and the file has no opening balance" if prev_bal is None else "the balance change doesn't match the amount"
                 issues.append(_issue(
@@ -429,5 +461,6 @@ def _balance_pass(transactions, candidates, model, decisions, stated_opening, do
         first = ordered_kept[0]
         signed_first = first.amount if first.direction == Direction.CREDIT else -first.amount
         document.opening_balance = stated_opening if stated_opening is not None else first.balance_after - signed_first
+        document.opening_balance_derived = stated_opening is None
         document.closing_balance = ordered_kept[-1].balance_after
     return kept, issues

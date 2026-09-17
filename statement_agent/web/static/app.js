@@ -313,6 +313,7 @@
         h('dt', { text: 'Money out' }), h('dd', { text: moneyList(s.money_out) }),
         h('dt', { text: 'Account' }), h('dd', { text: s.account || 'Not stated in the file' }),
         h('dt', { text: 'Currency' }), h('dd', { text: currencyText(p) }),
+        h('dt', { text: 'Adds up?' }), h('dd', {}, reconciliationBadge(s.reconciliation), s.reconciliation_detail ? h('span', { text: ` ${s.reconciliation_detail}` }) : null),
       ));
     }
 
@@ -340,6 +341,16 @@
 
     box.replaceChildren(h('div', { class: 'panel' }, ...children));
     setStep('check'); focusHeading(box);
+  }
+
+  function reconciliationBadge(status) {
+    const map = {
+      RECONCILED: ['good', 'Yes — matches the statement'],
+      MISMATCH: ['bad', 'No — doesn’t match the statement'],
+      CANNOT_CHECK: ['info', 'Couldn’t check'],
+    };
+    const [cls, text] = map[status] || ['info', 'Nothing to check against'];
+    return h('span', { class: `status ${cls}`, text });
   }
 
   function currencyText(p) {
@@ -416,6 +427,8 @@
     return wrap;
   }
 
+  const FIELD_WORDS = { date: 'Date', amount: 'Amount', direction: 'Money in or out', currency: 'Currency' };
+
   function transactionsTable(txns) {
     return h('div', {}, h('h3', { text: 'First transactions' }),
       h('div', { class: 'table-scroll', tabindex: '0', role: 'region', 'aria-label': 'First transactions' },
@@ -423,7 +436,10 @@
           h('thead', {}, h('tr', {}, h('th', { text: 'Date' }), h('th', { text: 'Description' }), h('th', { class: 'num', text: 'Money in' }), h('th', { class: 'num', text: 'Money out' }), h('th', { class: 'num', text: 'Balance' }))),
           h('tbody', {}, ...txns.slice(0, 10).map((t) => h('tr', {},
             h('td', { text: niceDate(t.date) }),
-            h('td', {}, t.description, t.flagged ? h('span', { class: 'status warn', style: 'margin-left:.4rem', text: 'Worth a look' }) : null),
+            h('td', {}, t.description,
+              t.flagged ? h('span', { class: 'status warn', style: 'margin-left:.4rem', text: 'Worth a look' }) : null,
+              (t.unsure || []).length ? h('span', { class: 'status warn', style: 'margin-left:.4rem', text: 'Not sure' }) : null,
+              (t.unsure || []).length ? h('div', { class: 'muted', text: t.unsure.map((u) => `${FIELD_WORDS[u.field] || u.field}: ${u.reason}`).join('. ') }) : null),
             h('td', { class: 'num', text: t.direction === 'CREDIT' ? money(t.amount, t.currency) : '' }),
             h('td', { class: 'num', text: t.direction === 'DEBIT' ? money(t.amount, t.currency) : '' }),
             h('td', { class: 'num', text: t.balance_after ? money(t.balance_after, t.currency) : '' }),
@@ -459,12 +475,12 @@
       extra.push(h('p', {}, h('label', { class: 'field', for: 'fix-currency', text: 'Currency of this file' }), sel));
       buttons.append(h('button', { type: 'button', class: 'btn primary', text: 'Confirm currency',
         onclick: () => act({ currency: sel.value, acknowledge: [issue.issue_id] }, { unacknowledge: [issue.issue_id] }) }));
-    } else if (issue.rule === 'date_order_assumed') {
+    } else if (issue.rule === 'date_order_assumed' && p.kind === 'tabular') {
       const radio = (value, label) => h('label', { class: 'choice' }, h('input', { type: 'radio', name: 'fix-order', value, checked: value === 'DMY' }), label);
       extra.push(h('fieldset', {}, h('legend', { text: 'Dates in this file are' }), radio('DMY', 'Day / month / year — 05/07/2025 is 5 July'), radio('MDY', 'Month / day / year — 05/07/2025 is 7 May')));
       buttons.append(h('button', { type: 'button', class: 'btn primary', text: 'Confirm date format',
         onclick: () => act({ date_order: $('input[name="fix-order"]:checked', box).value, acknowledge: [issue.issue_id] }, { unacknowledge: [issue.issue_id] }) }));
-    } else if (issue.rule === 'direction_unknown') {
+    } else if (issue.rule === 'direction_unknown' || (issue.rule === 'low_confidence' && issue.field === 'direction' && p.kind === 'tabular')) {
       buttons.append(
         h('button', { type: 'button', class: 'btn primary', text: 'Money out', onclick: () => act({ directions: { [issue.target]: 'DEBIT' } }, { directions: { [issue.target]: null } }) }),
         h('button', { type: 'button', class: 'btn primary', text: 'Money in', onclick: () => act({ directions: { [issue.target]: 'CREDIT' } }, { directions: { [issue.target]: null } }) }),

@@ -69,8 +69,11 @@ class Document:
     closing_balance: Decimal | None = None
     stated_total_debits: Decimal | None = None
     stated_total_credits: Decimal | None = None
-    reconciliation_status: str = "NOT_CHECKED"  # RECONCILED | MISMATCH | NOT_CHECKED | NO_TOTALS
+    reconciliation_status: str = "NOT_CHECKED"  # RECONCILED | MISMATCH | NOT_CHECKED | NO_TOTALS | CANNOT_CHECK
     reconciliation_delta: Decimal | None = None
+    reconciliation_detail: str = ""  # plain language: which checks ran against which stated figures, and how they came out
+    opening_balance_derived: bool = False  # True when no opening balance was stated and it was worked out from
+    # the first row's running balance — then the balance check only proves continuity, and the detail says so
     parse_warnings: list[str] = field(default_factory=list)
 
 
@@ -125,6 +128,8 @@ class Transaction:
     balance_after: Decimal | None = None  # the source's own running balance after this row, if stated
     field_confidence: dict[str, float] = field(default_factory=dict)  # per-field: "date", "amount",
     # "direction", "currency" — 1.0 = read directly or confirmed by the user; lower = inferred
+    field_reasons: dict[str, str] = field(default_factory=dict)  # per-field reason code (ingest/confidence.py
+    # REASONS) saying HOW the value was arrived at — the "derived rule" half of every field's provenance
     import_job_id: str | None = None  # which ImportJob committed this row — what makes undo-by-import possible
 
 

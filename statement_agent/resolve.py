@@ -276,18 +276,69 @@ def detect_cross_document_duplicates(transactions: list[Transaction], *, date_to
 # Statement reconciliation — only meaningful when a document states its own totals
 # ---------------------------------------------------------------------------
 
+def _money(v: Decimal) -> str:
+    return f"{v:,.2f}"
+
+
 def reconcile_document(doc: Document, transactions: list[Transaction]) -> None:
-    if doc.opening_balance is None or doc.closing_balance is None:
+    """Checks the extracted rows against every figure the statement states about itself.
+
+    Balance check: opening + money in - money out = closing for a bank account; for a card the balance is
+    what's owed, so opening + money out - money in = closing. Total checks: the rows' money out / money in
+    against a stated total. RECONCILED only if every available check holds; MISMATCH if any fails;
+    NO_TOTALS if the statement states nothing to check against; CANNOT_CHECK if rows in another currency
+    make a single-currency sum meaningless (a card statement's converted amount isn't extracted).
+    """
+    doc.reconciliation_delta = None
+    has_balances = doc.opening_balance is not None and doc.closing_balance is not None
+    has_totals = doc.stated_total_debits is not None or doc.stated_total_credits is not None
+    if not has_balances and not has_totals:
         doc.reconciliation_status = "NO_TOTALS"
+        doc.reconciliation_detail = "The statement doesn't state balances or totals, so there was nothing to check the rows against."
+        return
+
+    home = doc.currency_declared or "INR"
+    foreign = sorted({t.currency for t in transactions if t.currency != home})
+    if foreign:
+        doc.reconciliation_status = "CANNOT_CHECK"
+        doc.reconciliation_detail = (
+            f"Some rows are in {', '.join(foreign)}, and the statement's totals are in {home}. I don't have the "
+            "converted amounts, so I couldn't check the rows against the statement's own figures."
+        )
         return
 
     debits = sum((t.amount for t in transactions if t.direction == Direction.DEBIT), Decimal("0"))
     credits = sum((t.amount for t in transactions if t.direction == Direction.CREDIT), Decimal("0"))
-    expected_closing = doc.opening_balance - debits + credits
-    delta = expected_closing - doc.closing_balance
+    parts: list[str] = []
+    failed_deltas: list[Decimal] = []
 
-    doc.reconciliation_delta = delta
-    doc.reconciliation_status = "RECONCILED" if delta == 0 else "MISMATCH"
+    if has_balances:
+        card = doc.doc_type == "credit_card_statement"
+        expected = doc.opening_balance + debits - credits if card else doc.opening_balance - debits + credits
+        delta = expected - doc.closing_balance
+        start = "Opening balance (worked out from the first row)" if doc.opening_balance_derived else "Opening balance"
+        sums = (f"{_money(doc.opening_balance)} + money out {_money(debits)} − money in {_money(credits)}" if card
+                else f"{_money(doc.opening_balance)} − money out {_money(debits)} + money in {_money(credits)}")
+        if delta == 0:
+            parts.append(f"{start} {sums} = {_money(expected)}, which matches the closing balance.")
+        else:
+            parts.append(f"{start} {sums} = {_money(expected)}, but the closing balance is "
+                         f"{_money(doc.closing_balance)} (off by {_money(abs(delta))}).")
+            failed_deltas.append(delta)
+
+    for label, stated, actual in (("Money out", doc.stated_total_debits, debits), ("Money in", doc.stated_total_credits, credits)):
+        if stated is None:
+            continue
+        if actual == stated:
+            parts.append(f"{label} adds up to {_money(actual)}, matching the statement's total.")
+        else:
+            parts.append(f"{label} adds up to {_money(actual)}, but the statement's total is {_money(stated)} "
+                         f"(off by {_money(abs(actual - stated))}).")
+            failed_deltas.append(actual - stated)
+
+    doc.reconciliation_status = "MISMATCH" if failed_deltas else "RECONCILED"
+    doc.reconciliation_delta = failed_deltas[0] if failed_deltas else Decimal("0")
+    doc.reconciliation_detail = " ".join(parts)
 
 
 # ---------------------------------------------------------------------------

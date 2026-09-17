@@ -389,11 +389,14 @@ research work that can't be done in code at all.
 - Fixtures are synthetic. There's no consented, de-identified corpus of real bank exports, no golden
   benchmark separate from the development fixtures, and no per-format accuracy dashboard.
 - PDFs still use the date-at-start / amount-at-end row rule. There's no password-protected or rotated-page
-  handling, and reconciliation happens only when a statement states balances.
+  handling. (Stated balances and totals are now read and reconciled — `DECISIONS.md` §34 — but only from
+  labelled figures; a statement that states none can't be reconciled.)
+- Reconciliation can't check a statement with rows in a second currency (`CANNOT_CHECK`): the card's
+  converted amount isn't extracted.
 - Merged cells in XLSX are read as blank (openpyxl read-only mode); formulas use cached values only.
 - Header vocabulary is English. A German or Hindi header goes to needs_mapping, which is honest but
   unhelpful.
-- Category corrections aren't remembered yet. Only column mappings are.
+- Category corrections aren't remembered yet. Only column mappings are. (Phase 1, part 2 — next.)
 - No source viewer that opens the original page or row next to an answer. "Why?" shows the cited rows'
   extracted text.
 

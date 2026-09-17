@@ -35,6 +35,7 @@ from ..schema import (
 from ..store import (
     DuplicateDocument, Store, document_from_dict, document_to_dict, transaction_from_dict, transaction_to_dict,
 )
+from .confidence import explain, gate_issues, low_confidence_fields, set_field
 from .csv_parser import CsvParseResult, file_hash, parse_sniffed
 from .image_parser import SUPPORTED_IMAGE_EXTENSIONS, parse_image
 from .mapping import ColumnMapping, MappingError, apply_user_mapping, header_fingerprint, infer_mapping
@@ -45,7 +46,7 @@ from .tabular import ReviewDecisions
 from ..schema import ExtractionMethod
 from .vocab import KNOWN_CURRENCIES
 
-PARSER_VERSION = "staged-import-1"
+PARSER_VERSION = "staged-import-2"
 SUPPORTED_EXTENSIONS = {".pdf", ".csv", ".xlsx"} | SUPPORTED_IMAGE_EXTENSIONS
 TABULAR_EXTENSIONS = {".csv", ".xlsx"}
 MAX_PDF_PAGES = 200
@@ -415,7 +416,8 @@ def _evaluate(store: Store, job: ImportJob, staging: dict):
             document.parse_warnings = [w for w in document.parse_warnings if not w.startswith("CURRENCY:")]
             for t in transactions:
                 if t.field_confidence.get("currency", 1.0) < 1.0:
-                    t.currency, t.field_confidence["currency"] = override, 1.0
+                    t.currency = override
+                    set_field(t, "currency", "currency_confirmed")
         issues = _document_issues(document, transactions, staging, override)
         ignored = [{"key": f"line:{i}", **line} for i, line in enumerate(staging.get("ignored_lines", []))]
         ignored += [{"key": f"txn:{t.transaction_id}", "reason": "left out by you"} for t in all_txns if f"txn:{t.transaction_id}" in decisions.excluded]
@@ -427,12 +429,20 @@ def _evaluate(store: Store, job: ImportJob, staging: dict):
         t = flag.transaction
         t.notes = f"{t.notes} | FLAGGED: {flag.reason}".strip(" |")
     if document.reconciliation_status == "MISMATCH" and not any(i.rule == "balance_break" for i in issues):
+        left_out = sum(1 for k in decisions.excluded if k.startswith(("row:", "txn:")))
         issues.append(_doc_issue(
             "reconciliation_mismatch", IssueSeverity.CHECK,
-            f"The transactions don't add up to the statement's own balances (off by {document.reconciliation_delta}). "
-            "Something may be missing or misread.",
+            "The transactions don't add up to the statement's own figures. " + document.reconciliation_detail
+            + (f" You left out {left_out} row{'s' if left_out != 1 else ''}, which can explain this." if left_out else
+               " Something may be missing or misread."),
             "Compare with your statement; confirm to add it anyway (it will stay flagged).",
         ))
+    elif document.reconciliation_status == "CANNOT_CHECK":
+        issues.append(_doc_issue(
+            "reconciliation_unavailable", IssueSeverity.INFO, document.reconciliation_detail,
+            "Nothing to do; shown so you know these rows weren't checked against the statement's totals.",
+        ))
+    issues.extend(gate_issues(transactions, issues, row_key=_row_key))
     for issue in issues:
         if issue.issue_id in decisions.acknowledged and issue.severity != IssueSeverity.BLOCKING:
             issue.resolution = "acknowledged"
@@ -466,6 +476,10 @@ def _evaluate(store: Store, job: ImportJob, staging: dict):
     return document, transactions, mapping
 
 
+def _row_key(t) -> str:
+    return f"row:{t.source.row}" if t.source and t.source.row is not None else f"txn:{t.transaction_id}"
+
+
 def _doc_issue(rule, severity, message, action, *, target=None, evidence="") -> ValidationIssue:
     return ValidationIssue(f"{rule}:{target or 'file'}", rule, severity, message, action, target=target, evidence=evidence)
 
@@ -492,6 +506,13 @@ def _document_issues(document: Document, transactions, staging: dict, override: 
             f"I couldn't read every page of this file ({len(unread)} problem(s)), so some transactions may be missing.",
             "Confirm to add what I could read, or cancel and try a clearer copy.", evidence="; ".join(unread[:3]),
         ))
+    if any(t.field_reasons.get("date") == "date_order_default" for t in transactions):
+        issues.append(_doc_issue(
+            "date_order_assumed", IssueSeverity.CHECK,
+            "Some dates in this statement, like 05/07/2025, could be read two ways, and nothing in it settles "
+            "which. I read them as day/month/year.",
+            "Confirm that's right, or cancel if this statement uses month/day/year.",
+        ))
     for t in transactions:
         if not t.date_plausible:
             issues.append(_doc_issue(
@@ -515,13 +536,14 @@ def _issue_dict(i: ValidationIssue) -> dict:
 
 def _txn_preview(t) -> dict:
     return {
-        "key": f"row:{t.source.row}" if t.source and t.source.row is not None else f"txn:{t.transaction_id}",
+        "key": _row_key(t),
         "date": t.transaction_date.isoformat() if t.transaction_date else None,
         "description": t.description_raw, "amount": str(t.amount), "currency": t.currency,
         "direction": t.direction.value, "balance_after": str(t.balance_after) if t.balance_after is not None else None,
         "row": t.source.row if t.source else None, "page": t.source.page if t.source else None,
         "flagged": "FLAGGED:" in t.notes or t.duplicate_of is not None,
         "source_text": (t.source.raw_text if t.source else "")[:300],
+        "unsure": [{"field": f, "confidence": c, "reason": explain(r)} for f, c, r in low_confidence_fields(t)],
     }
 
 
@@ -543,6 +565,7 @@ def _summary(document: Document, transactions) -> dict:
         "flagged": sum(1 for t in transactions if "FLAGGED:" in t.notes or t.duplicate_of is not None),
         "account": document.account_label,
         "reconciliation": document.reconciliation_status,
+        "reconciliation_detail": document.reconciliation_detail,
     }
 
 

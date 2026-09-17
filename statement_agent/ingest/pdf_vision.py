@@ -28,6 +28,7 @@ import pymupdf
 
 from ..normalize import DocumentDateResolver, is_date_plausible, normalize_amount
 from ..schema import Direction, Document, EconomicType, ExtractionMethod, SourceRef, Transaction
+from .confidence import REQUIRED_FIELDS, set_field
 
 VISION_MODEL = "claude-sonnet-5"  # strong vision + tool-use accuracy at a fraction of Opus 5's cost per page
 VISION_EXTRACTION_CONFIDENCE = 0.75  # below native (1.0) — surfaced to the verifier/stability engine
@@ -190,6 +191,8 @@ def _vision_extract_from_image_bytes(
             ),
             notes="extracted via vision OCR fallback — lower confidence than native text extraction",
         )
+        for field_name in REQUIRED_FIELDS:
+            set_field(txn, field_name, "read_from_image", VISION_EXTRACTION_CONFIDENCE)
         if not plausible:
             txn.notes += " | date outside plausible statement range — excluded from totals until reviewed"
         result.transactions.append(txn)

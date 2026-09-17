@@ -26,6 +26,8 @@ import pdfplumber
 from ..ingest.csv_parser import file_hash
 from ..normalize import DocumentDateResolver, normalize_amount
 from ..schema import Direction, Document, EconomicType, ExtractionMethod, SourceRef, Transaction
+from .confidence import set_field
+from .statement_totals import apply_to_document, is_summary_label, is_summary_text, read_figures
 
 _DATE_ANCHOR_RE = re.compile(
     r"^(?:\d{4}-\d{1,2}-\d{1,2}|\d{1,2}[/-]\d{1,2}[/-]\d{4}|"
@@ -158,6 +160,19 @@ def parse_pdf_native(path: str) -> PdfParseResult:
         if dm:
             date_resolver.observe(dm.group(0))
     date_resolver.resolve_convention()
+    date_evidence = date_resolver._convention is not None
+
+    # Stated balances/totals, read from every line; a dated "Opening Balance 10,000.00" line is one of
+    # these, never a transaction.
+    figure_lines = []
+    for _, _, text in all_lines:
+        dm = _DATE_ANCHOR_RE.match(text.strip())
+        am = _AMOUNT_ANCHOR_RE.search(text.strip()) if dm else None
+        if dm and am and am.start() > dm.end():
+            if not is_summary_label(text.strip()[dm.end():am.start()]):
+                continue  # a transaction row; its description may merely contain a label's words
+        figure_lines.append(text)
+    apply_to_document(document, read_figures(figure_lines))
 
     transactions: list[Transaction] = []
     skipped: list[dict] = []
@@ -180,6 +195,9 @@ def parse_pdf_native(path: str) -> PdfParseResult:
             raw_date = date_m.group(0)
             raw_amount = stripped[amount_m.start():].strip()
             description = stripped[date_m.end():amount_m.start()].strip()
+            if is_summary_label(description):
+                skipped.append({"page": page_idx, "top": top, "text": stripped, "reason": "statement summary line (balance or total), not a transaction"})
+                continue
 
             parsed_date = date_resolver.parse(raw_date)
             parsed_amount = normalize_amount(raw_amount, default_currency=document.currency_declared or "INR")
@@ -221,15 +239,28 @@ def parse_pdf_native(path: str) -> PdfParseResult:
                     extraction_method=ExtractionMethod.NATIVE_TEXT,
                     extraction_confidence=1.0,
                 ),
-                # recorded so a staged import can apply a user-confirmed currency to exactly these rows
-                field_confidence={"currency": 0.5 if parsed_amount.currency_inferred else 1.0},
             )
+            if parsed_date.confidence >= 1.0:
+                set_field(txn, "date", "date_unambiguous")
+            else:
+                set_field(txn, "date", "date_order_from_document" if date_evidence else "date_order_default")
+            set_field(txn, "amount", "amount_read")
+            set_field(txn, "direction", "direction_sign")
+            # recorded so a staged import can apply a user-confirmed currency to exactly these rows
+            set_field(txn, "currency", "currency_symbol" if not parsed_amount.currency_inferred
+                      else "currency_assumed" if any(w.startswith("CURRENCY:") for w in document.parse_warnings)
+                      else "currency_file")
             if parsed_date.confidence < 1.0:
                 txn.notes = f"date assumption: {parsed_date.assumption}"
             if not plausible:
                 txn.notes = (txn.notes + " | date outside plausible statement range — excluded from totals until reviewed").strip(" |")
             transactions.append(txn)
             pending_row = txn
+            continue
+
+        if is_summary_text(stripped) and _AMOUNT_ANCHOR_RE.search(stripped):
+            skipped.append({"page": page_idx, "top": top, "text": stripped, "reason": "statement summary line (balance or total), not a transaction"})
+            pending_row = None
             continue
 
         if _HEADER_HINT_RE.match(stripped) or stripped.startswith("***") or "automated processing notice" in stripped.lower():

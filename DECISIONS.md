@@ -1602,3 +1602,62 @@ family-safety — is listed in `NOT_IMPLEMENTED.md` §I.
 
 355 tests passing (310 before; 35 in `tests/test_generalized_import.py`, and `tests/test_web.py`'s upload
 tests rewritten and extended for the job API, CSRF, signatures, size limits and sources).
+
+## 34. Phase 1, part 1 — field-level confidence, reason codes, and reconciliation against stated figures
+
+The roadmap's Phase 1 ("quality moat") is being built in five parts, committed separately: this trust core,
+then correction-driven categories, PDF row reconstruction, a golden benchmark, and summary cards. This part
+targets two release gates: *no low-confidence required field is automatically committed*, and *any
+statement with balances or totals either reconciles or is explicitly flagged*. Checking the code against
+those gates found three real gaps:
+
+- **Vision-OCR rows were committed with no review at all.** They carried `extraction_confidence` 0.75 but an
+  empty `field_confidence`, and nothing turned that into an issue.
+- **A PDF never had anything to reconcile against.** `pdf_native` never read an opening/closing balance or a
+  stated total, so every PDF ended `NO_TOTALS`. Worse, a dated "01/04/2025 Opening Balance 10,000.00"
+  line matched the row rule and would have become a 10,000 debit, and an undated "Closing Balance …" line
+  was glued onto the previous transaction's description as a wrapped line.
+- **An unsigned amount with an empty Dr/Cr cell was silently read as money out** (confidence 0.8, no issue).
+
+**What was built:**
+
+- `ingest/confidence.py` — a catalogue of reason codes (`date_order_default`, `direction_unmarked`,
+  `direction_from_balance`, `currency_assumed`, `read_from_image`, …), each with its confidence and a
+  plain-language explanation. Every parser now records `Transaction.field_reasons` alongside
+  `field_confidence` for date, amount, direction and currency, so every normalized field points to a source
+  cell or a named derivation rule. `gate_issues` then guarantees every required field under 0.85 is covered
+  by a review issue: file-wide reasons (assumed currency, unsettled date order, rows read from images) are
+  covered by one file-level check; anything else gets one check per row. Existing issues about the same
+  row and field count as coverage, so nothing is asked twice.
+- `ingest/statement_totals.py` — reads labelled opening/closing balances and total debits/credits: label and
+  figure on one line, several pairs on one line, or a label strip with the figures on the next line (only
+  when that next line is figures alone). A label seen with two different values (a per-page "balance b/f")
+  is dropped with a warning, never guessed between. On a dated PDF row only a description that is *nothing
+  but* a label counts, so "NEW BALANCE ATHLETICS 4,999.00" stays a purchase. Balance signs follow the
+  statement's own sense: a bank "Dr" balance is overdrawn (negative), a card "Cr" balance is in credit.
+- `resolve.reconcile_document` — the card equation runs the other way (a card balance is what's owed);
+  stated totals are checked independently of balances; rows in a second currency give `CANNOT_CHECK`
+  instead of a false mismatch; and `Document.reconciliation_detail` spells out the arithmetic in words
+  ("Opening balance 10,000.00 − money out 450.00 + money in 50,000.00 = 59,550.00, but the closing
+  balance is 58,350.00 (off by 1,200.00)"). When no opening balance is stated and it's worked out from the
+  first row's running balance, the detail says so — that check only proves continuity.
+- Spreadsheets: a bare "Total" row under money-out/money-in columns now states both totals (it used to
+  become an unreadable-date issue because "Total" sits in the date column), preamble total lines are read,
+  and a stated opening balance is used even without a balance column.
+- The review UI shows "Adds up?" with the detail on the check screen, a visible "Not sure" note with the
+  reason on preview rows (visible text, not a tooltip, so it works on touch and with screen readers),
+  money-in/money-out buttons for an uncertain direction, and names excluded rows as a likely cause of a
+  mismatch.
+
+**Deliberate change of behavior:** an ambiguous DD/MM date that the file's *other* dates settle is now 0.9
+(`date_order_from_document`) and no longer asks. §33 described the check as being for readings "with no
+disambiguating date", but the code asked in both cases. PDFs with an unsettled date order get an
+acknowledge-only check, because PDF extraction is cached and not re-run with a different date order.
+
+**Not changed:** the CLI still accepts disclosed checks non-interactively (reported as "accepted without
+review"), as in §33. The confidence stored is how a value was *read*; acknowledging a check records the
+acknowledgement on the issue, not a raised confidence — except where the person actually supplied the value
+(direction, currency, date order), which is recorded as a `*_confirmed` reason.
+
+Fixtures are synthetic; none of the `dataset_public/` statements state balances or totals, so they all
+correctly report "nothing to check against". 386 tests passing (31 new in `tests/test_trust_core.py`).

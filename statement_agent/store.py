@@ -129,9 +129,11 @@ _COLUMN_MIGRATIONS = {
         ("balance_after", "TEXT"),
         ("field_confidence", "TEXT"),  # JSON object
         ("import_job_id", "TEXT"),
+        ("field_reasons", "TEXT"),  # JSON object
     ],
     "documents": [
         ("import_job_id", "TEXT"),
+        ("reconciliation_detail", "TEXT"),
     ],
 }
 
@@ -178,8 +180,8 @@ class Store:
             INSERT INTO documents (document_id, file_path, file_hash, doc_type, account_label,
                 currency_declared, statement_start, statement_end, opening_balance, closing_balance,
                 stated_total_debits, stated_total_credits, reconciliation_status, reconciliation_delta,
-                parse_warnings, import_job_id)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                parse_warnings, import_job_id, reconciliation_detail)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(file_hash) DO UPDATE SET
                 doc_type=excluded.doc_type, account_label=excluded.account_label,
                 currency_declared=excluded.currency_declared, statement_start=excluded.statement_start,
@@ -187,7 +189,8 @@ class Store:
                 closing_balance=excluded.closing_balance, stated_total_debits=excluded.stated_total_debits,
                 stated_total_credits=excluded.stated_total_credits,
                 reconciliation_status=excluded.reconciliation_status,
-                reconciliation_delta=excluded.reconciliation_delta, parse_warnings=excluded.parse_warnings
+                reconciliation_delta=excluded.reconciliation_delta, parse_warnings=excluded.parse_warnings,
+                reconciliation_detail=excluded.reconciliation_detail
             """,
             (
                 doc.document_id, doc.file_path, doc.file_hash, doc.doc_type, doc.account_label,
@@ -197,7 +200,7 @@ class Store:
                 _dec(doc.opening_balance), _dec(doc.closing_balance),
                 _dec(doc.stated_total_debits), _dec(doc.stated_total_credits),
                 doc.reconciliation_status, _dec(doc.reconciliation_delta),
-                "\n".join(doc.parse_warnings), import_job_id,
+                "\n".join(doc.parse_warnings), import_job_id, doc.reconciliation_detail or None,
             ),
         )
 
@@ -219,6 +222,7 @@ class Store:
                 t.duplicate_of, t.duplicate_reason, t.notes,
                 t.value_date.isoformat() if t.value_date else None, t.reference_id, _dec(t.balance_after),
                 json.dumps(t.field_confidence) if t.field_confidence else None, t.import_job_id,
+                json.dumps(t.field_reasons) if t.field_reasons else None,
             ))
         self.conn.executemany(
             """
@@ -229,8 +233,8 @@ class Store:
                 category_declared, account_name,
                 source_file_path, source_page, source_row, source_raw_text, extraction_method,
                 extraction_confidence, duplicate_of, duplicate_reason, notes,
-                value_date, reference_id, balance_after, field_confidence, import_job_id
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                value_date, reference_id, balance_after, field_confidence, import_job_id, field_reasons
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             rows,
         )
@@ -455,6 +459,7 @@ def _row_to_transaction(r: sqlite3.Row) -> Transaction:
         balance_after=_undec(r["balance_after"]) if "balance_after" in keys else None,
         field_confidence=json.loads(r["field_confidence"]) if "field_confidence" in keys and r["field_confidence"] else {},
         import_job_id=r["import_job_id"] if "import_job_id" in keys else None,
+        field_reasons=json.loads(r["field_reasons"]) if "field_reasons" in keys and r["field_reasons"] else {},
     )
 
 
@@ -469,7 +474,7 @@ def document_to_dict(doc: Document) -> dict:
         "opening_balance": _dec(doc.opening_balance), "closing_balance": _dec(doc.closing_balance),
         "stated_total_debits": _dec(doc.stated_total_debits), "stated_total_credits": _dec(doc.stated_total_credits),
         "reconciliation_status": doc.reconciliation_status, "reconciliation_delta": _dec(doc.reconciliation_delta),
-        "parse_warnings": list(doc.parse_warnings),
+        "parse_warnings": list(doc.parse_warnings), "reconciliation_detail": doc.reconciliation_detail,
     }
 
 
@@ -483,6 +488,7 @@ def document_from_dict(d: dict) -> Document:
         stated_total_debits=_undec(d.get("stated_total_debits")), stated_total_credits=_undec(d.get("stated_total_credits")),
         reconciliation_status=d.get("reconciliation_status", "NOT_CHECKED"),
         reconciliation_delta=_undec(d.get("reconciliation_delta")), parse_warnings=list(d.get("parse_warnings") or []),
+        reconciliation_detail=d.get("reconciliation_detail") or "",
     )
 
 
@@ -499,7 +505,8 @@ def transaction_to_dict(t: Transaction) -> dict:
         "account_name": t.account_name, "duplicate_of": t.duplicate_of, "duplicate_reason": t.duplicate_reason,
         "notes": t.notes, "value_date": t.value_date.isoformat() if t.value_date else None,
         "reference_id": t.reference_id, "balance_after": _dec(t.balance_after),
-        "field_confidence": dict(t.field_confidence), "import_job_id": t.import_job_id,
+        "field_confidence": dict(t.field_confidence), "field_reasons": dict(t.field_reasons),
+        "import_job_id": t.import_job_id,
         "source": None if src is None else {
             "file_path": src.file_path, "file_hash": src.file_hash, "page": src.page, "row": src.row,
             "raw_text": src.raw_text, "extraction_method": src.extraction_method.value,
@@ -525,6 +532,7 @@ def transaction_from_dict(d: dict) -> Transaction:
         value_date=date.fromisoformat(d["value_date"]) if d.get("value_date") else None,
         reference_id=d.get("reference_id"), balance_after=_undec(d.get("balance_after")),
         field_confidence=dict(d.get("field_confidence") or {}), import_job_id=d.get("import_job_id"),
+        field_reasons=dict(d.get("field_reasons") or {}),
         source=None if src is None else SourceRef(
             file_path=src["file_path"], file_hash=src.get("file_hash", ""), page=src.get("page"), row=src.get("row"),
             raw_text=src.get("raw_text", ""), extraction_method=ExtractionMethod(src["extraction_method"]),
