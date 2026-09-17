@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 
 
 from ..ingest.csv_parser import file_hash
-from ..normalize import DocumentDateResolver, normalize_amount
+from ..normalize import DocumentDateResolver, infer_decimal_separator, normalize_amount
 from ..schema import Direction, Document, EconomicType, ExtractionMethod, SourceRef, Transaction
 from .confidence import set_field
 from .statement_totals import apply_to_document, is_summary_label, is_summary_text, read_figures
@@ -155,6 +155,9 @@ def parse_pdf_native(path: str) -> PdfParseResult:
             )
             break
 
+    decimal_separator = infer_decimal_separator(
+        [_AMOUNT_ANCHOR_RE.search(t).group(0) for _, _, t in all_lines if _AMOUNT_ANCHOR_RE.search(t)])
+
     date_resolver = DocumentDateResolver()
     for _, _, text in all_lines:
         dm = _DATE_ANCHOR_RE.match(text)
@@ -201,7 +204,8 @@ def parse_pdf_native(path: str) -> PdfParseResult:
                 continue
 
             parsed_date = date_resolver.parse(raw_date)
-            parsed_amount = normalize_amount(raw_amount, default_currency=document.currency_declared or "INR")
+            parsed_amount = normalize_amount(raw_amount, default_currency=document.currency_declared or "INR",
+                                             decimal_separator=decimal_separator)
             if parsed_date.value is None or parsed_amount is None:
                 skipped.append({"page": page_idx, "top": top, "text": stripped, "reason": "date/amount parse failed after anchor match"})
                 continue
@@ -245,7 +249,7 @@ def parse_pdf_native(path: str) -> PdfParseResult:
                 set_field(txn, "date", "date_unambiguous")
             else:
                 set_field(txn, "date", "date_order_from_document" if date_evidence else "date_order_default")
-            set_field(txn, "amount", "amount_read")
+            set_field(txn, "amount", "amount_separator_assumed" if parsed_amount.ambiguous_separator else "amount_read")
             set_field(txn, "direction", "direction_sign")
             # recorded so a staged import can apply a user-confirmed currency to exactly these rows
             set_field(txn, "currency", "currency_symbol" if not parsed_amount.currency_inferred

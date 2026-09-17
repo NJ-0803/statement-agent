@@ -1,6 +1,8 @@
 from datetime import date
 from decimal import Decimal
 
+import pytest
+
 from statement_agent.normalize import DocumentDateResolver, is_date_plausible, normalize_amount, normalize_merchant
 from statement_agent.schema import Direction
 
@@ -223,3 +225,42 @@ class TestNormalizeMerchant:
 
     def test_merchant_with_no_noise_is_unchanged_besides_case(self):
         assert normalize_merchant("UBER INDIA") == "UBER INDIA"
+
+
+class TestLocaleAwareAmounts:
+    """From the completion brief: EUR 1.234,50 and 1234,50 must both be 1234.50 under a confirmed locale,
+    and a cell whose separator could mean either thing must be flagged rather than guessed. Before this,
+    they parsed as 1.234 and 123450."""
+
+    @pytest.mark.parametrize("raw, expected", [
+        ("EUR 1.234,50", "1234.50"), ("1.234,50", "1234.50"), ("€1.234,50", "1234.50"),
+        ("1,234.50", "1234.50"), ("1,25,000.50", "125000.50"), ("1 234,50", "1234.50"),
+        ("1'234.50", "1234.50"), ("1.234.567,89", "1234567.89"), ("0,75", "0.75"), ("1234", "1234"),
+    ])
+    def test_both_conventions_parse_to_the_same_number(self, raw, expected):
+        parsed = normalize_amount(raw, default_currency="EUR")
+        assert parsed.amount == Decimal(expected) and not parsed.ambiguous_separator
+
+    @pytest.mark.parametrize("raw, separator, expected", [
+        ("1234,50", ",", "1234.50"), ("1234.50", ".", "1234.50"),
+        ("1.234", ",", "1234"), ("1.234", ".", "1.234"), ("1,234", ",", "1.234"), ("1,234", ".", "1234"),
+    ])
+    def test_a_confirmed_separator_decides(self, raw, separator, expected):
+        parsed = normalize_amount(raw, default_currency="EUR", decimal_separator=separator)
+        assert parsed.amount == Decimal(expected) and not parsed.ambiguous_separator
+
+    @pytest.mark.parametrize("raw", ["1.234", "1,234", "EUR 1.500"])
+    def test_an_unsettled_separator_is_flagged_not_guessed_silently(self, raw):
+        parsed = normalize_amount(raw, default_currency="EUR")
+        assert parsed.ambiguous_separator and "could group thousands" in parsed.separator_assumption
+
+    @pytest.mark.parametrize("raw", ["ref 12.34 fee", "abc", "12 monthly payments", "1,340.00 and more text"])
+    def test_a_cell_that_is_not_only_an_amount_is_not_an_amount(self, raw):
+        assert normalize_amount(raw) is None
+
+    def test_a_documents_own_amounts_settle_its_convention(self):
+        from statement_agent.normalize import infer_decimal_separator
+
+        assert infer_decimal_separator(["1.234,50", "99,00"]) == ","
+        assert infer_decimal_separator(["1,234.50", "99.00"]) == "."
+        assert infer_decimal_separator(["1.234", "5.678"]) is None

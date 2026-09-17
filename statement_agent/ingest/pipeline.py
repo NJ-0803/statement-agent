@@ -217,11 +217,16 @@ def update_review(store: Store, job_id: str, data: dict) -> ImportJob:
     date_order = data.get("date_order")
     if date_order is not None and date_order not in ("DMY", "MDY"):
         raise MappingError("date_order must be DMY or MDY")
+    decimal_separator = data.get("decimal_separator")
+    if decimal_separator is not None and decimal_separator not in (".", ","):
+        raise MappingError("decimal_separator must be '.' or ','")
     negative_means = data.get("negative_means")
     if negative_means is not None and negative_means not in ("CREDIT", "DEBIT"):
         raise MappingError("negative_means must be CREDIT or DEBIT")
-    if (currency or date_order or negative_means) and job.file_kind == "tabular" and staging.get("mapping"):
+    if (currency or date_order or negative_means or decimal_separator) and job.file_kind == "tabular" and staging.get("mapping"):
         mapping = ColumnMapping.from_dict(staging["mapping"])
+        if decimal_separator:
+            mapping.decimal_separator = decimal_separator
         if negative_means:
             mapping.negative_means, mapping.negative_means_source = negative_means, "user"
         if currency:
@@ -635,6 +640,16 @@ def _document_issues(document: Document, transactions, staging: dict, override: 
             "pages_unread", IssueSeverity.CHECK,
             f"I couldn't read every page of this file ({len(unread)} problem(s)), so some transactions may be missing.",
             "Confirm to add what I could read, or cancel and try a clearer copy.", evidence="; ".join(unread[:3]),
+        ))
+    unsettled = [t for t in transactions if t.field_reasons.get("amount") == "amount_separator_assumed"]
+    if unsettled:
+        example = unsettled[0]
+        issues.append(_doc_issue(
+            "amount_format_assumed", IssueSeverity.CHECK,
+            f"{len(unsettled)} amount(s) here, like '{example.amount_raw}', use a ',' or '.' that could group "
+            f"thousands or be the decimal point, and nothing in this statement settles which. I read that one "
+            f"as {example.amount}.",
+            "Confirm that reading, or cancel and add a file that writes its amounts unambiguously.",
         ))
     if any(t.field_reasons.get("date") == "date_order_default" for t in transactions):
         issues.append(_doc_issue(

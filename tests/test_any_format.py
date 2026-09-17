@@ -271,3 +271,33 @@ class TestFormats:
         body = res.get_json()
         assert [j["file"] for j in body["imports"]] == ["w.json"]
         assert body["rejected"][0]["file"] == "fake.docx"
+
+
+class TestEuropeanAmountsEndToEnd:
+    """The brief's locale case, all the way through an import rather than at the parser alone."""
+
+    def test_a_german_statement_imports_the_right_numbers(self, store, tmp_path):
+        text = ("Buchungstag;Verwendungszweck;Betrag;Währung\n"
+                "13.04.2025;REWE MARKT;-1.234,50;EUR\n"
+                "14.04.2025;GEHALT APRIL;2.500,00;EUR\n"
+                "15.04.2025;SPOTIFY;-9,99;EUR\n")
+        _, txns = _add(store, _write(tmp_path, "de.csv", text))
+        assert [(str(t.transaction_date), str(t.amount), t.direction.value) for t in sorted(txns, key=lambda t: t.transaction_date)] == [
+            ("2025-04-13", "1234.50", "DEBIT"), ("2025-04-14", "2500.00", "CREDIT"), ("2025-04-15", "9.99", "DEBIT")]
+
+    def test_a_file_whose_amounts_never_settle_the_format_asks(self, store, tmp_path):
+        # every amount is "<digits><separator><3 digits>", which means either thousands or a decimal point
+        text = "Date,Description,Amount,Currency\n2025-04-01,EDEKA,1.234,EUR\n2025-04-02,BAECKEREI,2.500,EUR\n"
+        path = _write(tmp_path, "unsettled.csv", text)
+        job = pipeline.create_import(store, path, "unsettled.csv")
+        job = pipeline.analyze_import(store, job.job_id, attempt_vision=False)
+        issues = {i["rule"]: i for i in store.get_staging(job.job_id)["issues"]}
+        assert "amount_format_assumed" in issues and job.state.value == "needs_review"
+        assert "could group thousands" in issues["amount_format_assumed"]["message"]
+
+        # answering changes the numbers: with '.' as the decimal point these are 1.234 and 2.500,
+        # not the 1234 and 2500 the unsettled reading assumed
+        job = pipeline.update_review(store, job.job_id, {"decimal_separator": "."})
+        assert not any(i["rule"] == "amount_format_assumed" for i in store.get_staging(job.job_id)["issues"])
+        pipeline.commit_import(store, job.job_id)
+        assert sorted(str(t.amount) for t in store.all_transactions()) == ["1.234", "2.500"]

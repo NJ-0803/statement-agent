@@ -548,6 +548,13 @@
       extra.push(h('fieldset', {}, h('legend', { text: 'Dates in this file are' }), radio('DMY', 'Day / month / year — 05/07/2025 is 5 July'), radio('MDY', 'Month / day / year — 05/07/2025 is 7 May')));
       buttons.append(h('button', { type: 'button', class: 'btn primary', text: 'Confirm date format',
         onclick: () => act({ date_order: $('input[name="fix-order"]:checked', box).value, acknowledge: [issue.issue_id] }, { unacknowledge: [issue.issue_id] }) }));
+    } else if (issue.rule === 'amount_format_assumed' && p.kind === 'tabular') {
+      const radio = (value, label) => h('label', { class: 'choice' }, h('input', { type: 'radio', name: 'fix-decimal', value, checked: value === '.' }), label);
+      extra.push(h('fieldset', {}, h('legend', { text: 'In this file, 1.234 means' }),
+        radio('.', 'One thousand two hundred and thirty-four — the dot groups thousands'),
+        radio(',', 'One point two three four — the dot is the decimal point')));
+      buttons.append(h('button', { type: 'button', class: 'btn primary', text: 'Confirm number format',
+        onclick: () => act({ decimal_separator: $('input[name="fix-decimal"]:checked', box).value === '.' ? ',' : '.', acknowledge: [issue.issue_id] }, { unacknowledge: [issue.issue_id] }) }));
     } else if (issue.rule === 'direction_unknown' || (issue.rule === 'low_confidence' && issue.field === 'direction' && p.kind === 'tabular')) {
       buttons.append(
         h('button', { type: 'button', class: 'btn primary', text: 'Money out', onclick: () => act({ directions: { [issue.target]: 'DEBIT' } }, { directions: { [issue.target]: null } }) }),

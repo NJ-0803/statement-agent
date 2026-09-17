@@ -48,7 +48,7 @@ class ColumnMapping:
     date_order_source: str = "undetermined"  # "evidence" | "user" | "undetermined"
     currency: str | None = None  # document-level currency for rows without their own
     currency_source: str = "assumed"  # "column" | "header" | "document" | "amount_cells" | "user" | "assumed"
-    decimal_separator: str = "."
+    decimal_separator: str | None = None  # None = nothing in the file has settled it yet
     excel_serial_dates: bool = False
     # For a single signed amount column: does a minus sign mean money IN (expense sheets, where spending is
     # written as a positive number) or money OUT (bank exports)? Explicit CR/DR endings always win.
@@ -357,6 +357,9 @@ def _settle_decimal_separator(mapping: ColumnMapping, table: TableCandidate) -> 
     if comma and not dot:
         mapping.decimal_separator = ","
         mapping.evidence.setdefault("_file", []).append("Amounts use a comma for decimals (e.g. 1.234,56)")
+    elif dot and not comma:
+        mapping.decimal_separator = "."
+        mapping.evidence.setdefault("_file", []).append("Amounts use a dot for decimals (e.g. 1,234.56)")
     elif comma and dot:
         mapping.ambiguities.append("Some amounts use '.' for decimals and others use ',' — I can't tell which is right.")
 

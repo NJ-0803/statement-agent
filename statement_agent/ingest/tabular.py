@@ -85,10 +85,7 @@ def _section_of(cells: list[str]) -> str | None:
 def parse_money(raw: str, *, decimal_separator: str, default_currency: str):
     if not looks_like_amount(raw):
         return None
-    text = raw
-    if decimal_separator == ",":
-        text = raw.replace(".", "").replace(",", ".")
-    return normalize_amount(text, default_currency=default_currency)
+    return normalize_amount(raw, default_currency=default_currency, decimal_separator=decimal_separator)
 
 
 def _issue(rule, severity, message, action, *, target=None, field_name=None, evidence="") -> ValidationIssue:
@@ -140,6 +137,7 @@ def normalize_table(
     by_key: dict[str, Transaction] = {}
     signed_amount: dict[str, bool] = {}
     assumed_currency_used = ambiguous_date_used = sign_assumed_used = False
+    unsettled_amount: str | None = None
     last_txn_candidate: RawTransactionCandidate | None = None
     stated_opening = stated_closing = None
     stated = StatedFigures()
@@ -269,6 +267,8 @@ def normalize_table(
             else:
                 raw_amount = d_raw if d_set else c_raw
                 parsed_amount = parse_money(raw_amount, decimal_separator=mapping.decimal_separator, default_currency=doc_currency)
+                if parsed_amount is not None and parsed_amount.ambiguous_separator:
+                    unsettled_amount = unsettled_amount or raw_amount
                 direction = Direction.DEBIT if d_set else Direction.CREDIT
                 direction_reason = "direction_column"
                 if parsed_amount is None:
@@ -279,6 +279,8 @@ def normalize_table(
                 fail("missing_amount", f"Row {row_no} has a date but no amount.", "Leave this row out.", "missing amount", "amount")
             else:
                 parsed_amount = parse_money(raw_amount, decimal_separator=mapping.decimal_separator, default_currency=doc_currency)
+                if parsed_amount is not None and parsed_amount.ambiguous_separator:
+                    unsettled_amount = unsettled_amount or raw_amount
                 if parsed_amount is None:
                     fail("unparseable_amount", f"I couldn't read the amount '{raw_amount}' on row {row_no}.", "Leave this row out.", f"unparseable amount: {raw_amount!r}", "amount")
                 else:
@@ -377,7 +379,7 @@ def normalize_table(
             ),
         )
         set_field(txn, "date", date_reason)
-        set_field(txn, "amount", "amount_read")
+        set_field(txn, "amount", "amount_separator_assumed" if (parsed_amount and parsed_amount.ambiguous_separator) else "amount_read")
         if direction_reason:
             set_field(txn, "direction", direction_reason)
         set_field(txn, "currency", currency_reason)
@@ -428,6 +430,13 @@ def normalize_table(
             f"This sheet has no dates on its rows. It says it covers {period_date:%B %Y}, so I dated every row "
             f"{period_date:%d %B %Y}.",
             "Confirm, or add a file with real dates if you need day-by-day detail.", field_name="date",
+        ))
+    if unsettled_amount is not None:
+        issues.append(_issue(
+            "amount_format_assumed", IssueSeverity.CHECK,
+            f"Amounts here, like '{unsettled_amount}', use a ',' or '.' that could group thousands or be the "
+            "decimal point, and nothing in this file settles which. I read them as grouped thousands.",
+            "Confirm that reading, or switch it.", field_name="amount",
         ))
     if sign_assumed_used:
         issues.append(_issue(

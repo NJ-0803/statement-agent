@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 
 import pymupdf
 
-from ..normalize import DocumentDateResolver, is_date_plausible, normalize_amount
+from ..normalize import DocumentDateResolver, infer_decimal_separator, is_date_plausible, normalize_amount
 from ..schema import Direction, Document, EconomicType, ExtractionMethod, SourceRef, Transaction
 from .confidence import REQUIRED_FIELDS, set_field
 
@@ -148,11 +148,13 @@ def _vision_extract_from_image_bytes(
         date_resolver.observe(row.get("date_raw", ""))
     date_resolver.resolve_convention()
 
+    decimal_separator = infer_decimal_separator([r.get("amount_raw", "") for r in payload.get("transactions", [])])
     for row in payload.get("transactions", []):
         raw_date = row.get("date_raw", "")
         raw_amount = row.get("amount_raw", "")
         parsed_date = date_resolver.parse(raw_date)
-        parsed_amount = normalize_amount(raw_amount, default_currency=document.currency_declared or result.currency_declared or "INR")
+        parsed_amount = normalize_amount(raw_amount, decimal_separator=decimal_separator,
+                                         default_currency=document.currency_declared or result.currency_declared or "INR")
 
         if parsed_date.value is None or parsed_amount is None:
             result.warnings.append(f"vision row failed normalization on {label}: {row!r}")

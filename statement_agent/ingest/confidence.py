@@ -29,6 +29,8 @@ REASONS: dict[str, tuple[float, str]] = {
     "date_from_period": (0.7, "the row has no date, so it was given the month the sheet says it covers"),
     # amount
     "amount_read": (1.0, "the amount was read directly from the file"),
+    "amount_separator_assumed": (0.6, "the ',' or '.' in this amount could group thousands or be the decimal "
+                                      "point, and nothing in the file settled which"),
     # direction
     "direction_column": (1.0, "the amount was in the money-out or money-in column"),
     "direction_sign": (1.0, "the amount's sign or Cr/Dr ending says which way the money moved"),
@@ -52,6 +54,7 @@ REASONS: dict[str, tuple[float, str]] = {
 FILE_LEVEL_RULE = {
     "date_order_default": "date_order_assumed",
     "date_from_period": "date_from_period",
+    "amount_separator_assumed": "amount_format_assumed",
     "currency_assumed": "currency_assumed",
     "direction_sign_assumed": "sign_convention_assumed",
     "read_from_image": "read_from_image",

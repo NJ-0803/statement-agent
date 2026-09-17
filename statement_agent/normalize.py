@@ -56,37 +56,117 @@ class ParsedAmount:
     direction: Direction
     raw: str
     currency_inferred: bool  # True if currency came from the document default, not the row itself
+    ambiguous_separator: bool = False  # the ',' or '.' in this cell could group thousands or be the decimal
+    separator_assumption: str = ""  # plain language: how the separators were read
 
 
-def normalize_amount(raw: str, *, default_currency: str = "INR") -> ParsedAmount | None:
+_AMOUNT_CELL_RE = re.compile(
+    r"""^\s*
+    (?P<prefix_ccy>₹|\$|€|£|INR|USD|EUR|GBP|Rs\.?)?\s*
+    (?P<sign>[-+])?\s*
+    (?P<paren_open>\()?\s*
+    (?P<prefix_ccy2>₹|\$|€|£|INR|USD|EUR|GBP|Rs\.?)?\s*
+    (?P<sign2>[-+])?\s*
+    (?P<digits>\d[\d.,'\u00a0\u202f ]*)
+    \s*(?P<paren_close>\))?
+    \s*(?P<suffix>CR|DR)?\.?
+    \s*(?P<trailing_minus>-)?
+    \s*(?P<suffix_ccy>₹|\$|€|£|INR|USD|EUR|GBP|Rs\.?)?
+    \s*(?P<suffix2>CR|DR)?\.?
+    \s*$""",
+    re.VERBOSE | re.IGNORECASE,
+)
+_GROUPED_RE = re.compile(r"^\d{1,3}(?:[,. '\u00a0\u202f]\d{2,3})*$")
+
+
+def split_amount_digits(digits: str, decimal_separator: str | None) -> tuple[str, bool, str]:
+    """Turn the digit part of a cell into a plain number string.
+
+    Returns (plain digits, ambiguous, how it was read). Which character is the decimal point depends on the
+    file, not on this string: "1.234,50" is 1234.50 in Europe and "1,234.50" is the same number elsewhere.
+    Rules, in order:
+      * both ',' and '.' present -> whichever comes last is the decimal point
+      * one kind, more than once -> grouping ("1.234.567")
+      * one kind, once, with 1, 2 or 4+ digits after it -> decimal point ("1234,50", "1.5")
+      * one kind, once, with exactly 3 digits after it -> genuinely ambiguous ("1.234"): the file's own
+        convention decides, and when nothing has settled it the number is read as grouped AND flagged, so
+        the import asks instead of guessing silently.
+    """
+    cleaned = digits.strip().replace("'", "").replace("\u00a0", " ").replace("\u202f", " ")
+    if " " in cleaned.strip():  # space is only ever a thousands separator
+        cleaned = cleaned.replace(" ", "")
+    commas, dots = cleaned.count(","), cleaned.count(".")
+
+    def strip_all(text: str) -> str:
+        return text.replace(",", "").replace(".", "")
+
+    if commas and dots:
+        decimal = "," if cleaned.rfind(",") > cleaned.rfind(".") else "."
+        whole, _, fraction = cleaned.rpartition(decimal)
+        return f"{strip_all(whole)}.{strip_all(fraction)}", False, f"'{decimal}' is the decimal point"
+    sep = "," if commas else "." if dots else ""
+    if not sep:
+        return cleaned, False, "whole number"
+    count = commas or dots
+    whole, _, fraction = cleaned.rpartition(sep)
+    if count > 1:
+        return strip_all(cleaned), False, f"'{sep}' repeats, so it groups thousands"
+    if len(fraction) != 3:
+        return f"{strip_all(whole)}.{fraction}", False, f"'{sep}' is the decimal point"
+    if decimal_separator == sep:
+        return f"{strip_all(whole)}.{fraction}", False, f"this file uses '{sep}' as the decimal point"
+    if decimal_separator and decimal_separator != sep:
+        return strip_all(cleaned), False, f"this file uses '{decimal_separator}' as the decimal point, so '{sep}' groups thousands"
+    return strip_all(cleaned), True, f"'{sep}' could group thousands or be the decimal point"
+
+
+def infer_decimal_separator(samples: list[str]) -> str | None:
+    """Which character this document uses as its decimal point, from its own amounts: a separator followed
+    by exactly two digits at the end of a value is a decimal point ("1.234,50" / "1,234.50"). None when the
+    document's amounts never settle it."""
+    comma = sum(1 for v in samples if re.search(r",\d{2}\b(?!\d)", v or ""))
+    dot = sum(1 for v in samples if re.search(r"\.\d{2}\b(?!\d)", v or ""))
+    if comma and not dot:
+        return ","
+    if dot and not comma:
+        return "."
+    return None
+
+
+def normalize_amount(raw: str, *, default_currency: str = "INR",
+                     decimal_separator: str | None = None) -> ParsedAmount | None:
     """Parse one amount cell into a signed-aware (amount, currency, direction).
 
-    Handles: ₹1,340.00 / Rs 860 / Rs. 2,494.73 / INR 1,120.00 / USD 20.00 /
-    540.00 / 8,000.00 CR / (1,250.00) / -1250 / 1,25,000.50 (Indian grouping).
+    The whole cell must be an amount: a cell with other text in it is not a number, and reading one out of
+    it (the old behaviour) invented values from things like "ref 12.34 fee". `decimal_separator` is the
+    file's confirmed convention when one is known; without it, a cell whose separator could mean either
+    thing is marked ambiguous for the import to ask about.
+
+    Handles: ₹1,340.00 / Rs 860 / Rs. 2,494.73 / INR 1,120.00 / USD 20.00 / 540.00 / 8,000.00 CR /
+    (1,250.00) / -1250 / 1,25,000.50 (Indian grouping) / EUR 1.234,50 / 1 234,50 (French spacing).
     """
     if raw is None:
         return None
-    text = raw.strip()
+    text = raw.strip().strip('"').strip("'").strip()  # a value still carrying its CSV quotes is still a number
     if not text:
         return None
 
-    m = _AMOUNT_TOKEN_RE.search(text)
+    m = _AMOUNT_CELL_RE.match(text)
     if not m or not m.group("digits"):
         return None
 
-    digits = m.group("digits").replace(",", "")
+    plain, ambiguous, assumption = split_amount_digits(m.group("digits"), decimal_separator)
     try:
-        value = Decimal(digits)
+        value = Decimal(plain)
     except InvalidOperation:
         return None
 
-    is_negative = text.strip().startswith("-") or bool(m.group("paren_open")) or bool(m.group("trailing_minus"))
-    suffix = (m.group("suffix") or "").upper()
-    direction = Direction.DEBIT
-    if suffix == "CR" or is_negative:
-        direction = Direction.CREDIT
+    suffix = (m.group("suffix") or m.group("suffix2") or "").upper()
+    is_negative = (m.group("sign") == "-" or m.group("sign2") == "-"
+                   or bool(m.group("paren_open")) or bool(m.group("trailing_minus")))
+    direction = Direction.CREDIT if (suffix == "CR" or is_negative) else Direction.DEBIT
 
-    ccy_token = (m.group("prefix_ccy") or m.group("suffix_ccy") or "").upper().rstrip(".")
+    ccy_token = (m.group("prefix_ccy") or m.group("prefix_ccy2") or m.group("suffix_ccy") or "").upper().rstrip(".")
     currency_inferred = False
     if ccy_token in CURRENCY_SYMBOLS:
         currency = CURRENCY_SYMBOLS[ccy_token]
@@ -104,6 +184,8 @@ def normalize_amount(raw: str, *, default_currency: str = "INR") -> ParsedAmount
         direction=direction,
         raw=raw,
         currency_inferred=currency_inferred,
+        ambiguous_separator=ambiguous,
+        separator_assumption=assumption,
     )
 
 
