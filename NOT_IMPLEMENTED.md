@@ -386,7 +386,10 @@ of these are scoped or scheduled, just recorded so they don't get re-derived fro
 Everything below is from the same roadmap and is **not** built. Several items are legal, operational or
 research work that can't be done in code at all.
 
-**Production foundation (roadmap Phase 2)**
+**Production foundation (roadmap Phase 2) — not planned.** The owner's decision (18 Sep 2026) is that this
+stays a local tool, so none of the following is scheduled; it is listed to stay honest about what public
+hosting would require.
+
 - No accounts, authentication (passkeys/OTP), RBAC or session revocation. Isolation between people is still
   only the `--client` one-ledger-per-client file (§31); `ImportJob.owner` is always `"local"`.
 - Local controls now exist (§40): delete everything (web + CLI), backup/restore, request rate limits.
@@ -414,8 +417,8 @@ research work that can't be done in code at all.
   text and password-protected spreadsheets aren't read.
 - Category, merchant-name and kind corrections are remembered as word rules (`DECISIONS.md` §35–36).
   Rules can't match on amount or account, and can't be exported or shared.
-- No source viewer that opens the original page or row next to an answer. "Why?" shows the cited rows'
-  extracted text.
+- No source viewer that opens the original page or row next to an answer: **out of scope by the owner's
+  decision (18 Sep 2026)**. "Why?" still shows the cited rows' file, page, row and extracted text.
 
 **People and product (roadmap §3, Phase 3)**
 - No WCAG 2.2 AA audit with screen readers, and no usability sessions with older adults.

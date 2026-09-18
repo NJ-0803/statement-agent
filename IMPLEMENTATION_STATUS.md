@@ -20,7 +20,7 @@ are listed at the bottom.
 | P1 | Expose skipped rows/pages | **Built** | every row ends as transaction / ignored-with-reason / issue; "Rows I didn't use" in the review screen |
 | P1 | Reconcile stated totals | **Built** | `statement_totals.py`, `resolve.reconcile_document` (§34) |
 | P1 | Missing spreadsheet formula caches | **Built** | `sniff.find_uncached_formulas`, `formulas_without_results` check |
-| P1 | Original-source viewer for cited pages/rows | **Not built** | citations carry file/page/row and the extracted text, but nothing renders the original page |
+| P1 | Original-source viewer for cited pages/rows | **Out of scope** — owner's decision, 18 Sep 2026 | citations still carry file, page, row and the extracted text; nothing renders the original page |
 | P1 | Stable account identity | **Out of scope** — owner's decision, 18 Sep 2026 | `account_name` per row is kept; no account record or cross-file identity |
 | P1 | Transaction vs posted date | **Partly** | `value_date` is kept separate from `transaction_date`; there is no documented policy for which drives period totals |
 | P1 | Pending-to-posted matching | **Out of scope** — owner's decision, 18 Sep 2026 | — |
@@ -31,11 +31,11 @@ are listed at the bottom.
 | P1 | Minimize sensitive context and logs | **Partly** | card-number columns masked at intake; only merchant words leave the machine; no log redaction pass, and uploads/ledger are unencrypted |
 | P1 | Bound parser size, time, memory, queue | **Partly; the rest is out of scope** — owner's decision, 18 Sep 2026 | 25 MB per file, 20 files per request, 200k rows, 200 PDF pages, zip-ratio limits, per-client rate limits. Per-file CPU/memory/time limits and isolated worker processes are not being built |
 | P1 | Safe exports, cancellation, deletion, backup/restore | **Built** | formula-safe CSV export, cancel/rollback, delete everything, `backup`/`restore`/`wipe` (§40) |
-| P1 | Independent evaluation | **Built (harness), partly run** | `eval/question_bank.json`, `eval/run_red_team_bank.py --resume`, `eval/grade.py`; 74 of 95 answered, 21 blocked by API credit |
+| P1 | Independent evaluation | **Harness built; run stays partial by the owner's decision** | `eval/question_bank.json`, `eval/run_red_team_bank.py --resume`, `eval/grade.py`; 74 of 95 answered, and the 21 blocked by API credit will not be run |
 | P1 | Accessible onboarding; keyboard, screen reader, zoom, mobile | **Not verified** | built to the guidelines (18px base, 48px targets, labels, live regions, no dialogs); never tested with a screen reader or on a phone |
 | P1 | Document supported formats/languages and uncertainty | **Built** | README "What it can't do (yet)", this file, `NOT_IMPLEMENTED.md` |
 | P1 | Update stale README claims | **Built** | README test count, capabilities and limits updated |
-| P2 | Authentication, per-owner authorization, private storage, durable jobs, quotas, monitoring, recovery tests | **Not built** | local mode only; no public hosting is authorized by the brief |
+| P2 | Authentication, per-owner authorization, private storage, durable jobs, quotas, monitoring, recovery tests | **Not planned** — stays listed in `NOT_IMPLEMENTED.md` §I | local mode only; no public hosting is authorized, and none is intended |
 
 ## Acceptance cases
 
@@ -62,6 +62,11 @@ Asked for by the brief, declined by the owner — not deferred, not forgotten:
 - Pending-to-posted matching.
 - EMI and FX settlement links.
 - Per-file CPU / memory / time limits and isolated parser worker processes.
+- An original-source viewer for cited pages and rows.
+- Re-running the 21 evaluation questions that API credit blocked: the run stays at 74 of 95, and
+  `eval/report.md` reports those 21 as infrastructure errors, never as passes or failures.
+- All P2 hosting work (authentication, per-owner authorization, hosted storage, durable jobs, quotas,
+  monitoring). Local mode is the product; the list stays in `NOT_IMPLEMENTED.md` §I.
 
 ## Release decisions still with the owner
 
@@ -76,7 +81,8 @@ Asked for by the brief, declined by the owner — not deferred, not forgotten:
 
 ## Not run
 
-- The 21 evaluation questions blocked by API credit, and any live re-run of the other 74.
+- The 21 evaluation questions blocked by API credit, and any live re-run of the other 74 — out of scope
+  by the owner's decision, so the recorded result stands at 74 answered of 95.
 - Any live Anthropic vision-OCR run since the scanned-page path was last touched.
 - Screen reader, keyboard-only, zoom and mobile checks.
 - Any test against a real bank export: every fixture here is synthetic.
