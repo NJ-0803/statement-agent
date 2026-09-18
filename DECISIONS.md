@@ -1993,3 +1993,45 @@ folder being re-imported per test, plus PDFs being re-read several times inside 
 Result: **3.4s** for 481 tests, from about 280s at its worst and ~88s on an idle machine. The floor is
 roughly 1.2s — pytest's own startup plus importing Flask/PyMuPDF/openpyxl in each worker — so the asked-for
 2s isn't reachable while each worker pays that cost; the remaining ~2s is the tests themselves.
+
+## 42. The completion brief: bound evidence, locale amounts, and repeat purchases
+
+Worked from `Statement_Agent_Claude_Code_Implementation_Brief.docx` (reviewed at commit ce2ba995). Each
+reported failure was reproduced against the current code before anything changed.
+
+**P0 — verification (§ reproduced).** A July dining INR 500 tool result verified a "USD 500" claim and an
+"August groceries" claim, and "You spent INR 999999" passed whenever `verified_amounts` was empty. The
+verifier now builds *facts* from each tool result — a number with the currency it came back in and the
+scope of the call that produced it (category, account, date range, group key, gross vs net). A claim must
+match a fact in the same currency; if the answer attributes it to a month or category the supporting call
+didn't cover, that's a failure; money written in prose needs backing even when it's a whole number; and
+describing a figure as net of refunds requires a `net_spending` result behind it. A number that only ever
+appeared untagged still grounds a claim numerically — there's nothing to check it against, and pretending
+otherwise would fail honest answers.
+
+**P0 — locale-aware amounts (§ reproduced).** "EUR 1.234,50" parsed as 1.234 and "1234,50" as 123450.
+`normalize_amount` now matches the **whole cell** (so "ref 12.34 fee" is not an amount at all) and decides
+which separator is the decimal point: the later one when both appear, repetition means grouping, and 1, 2
+or 4+ trailing digits mean a decimal point. "1.234" is genuinely ambiguous, so it is flagged rather than
+guessed silently: `ColumnMapping.decimal_separator` is now None until something settles it (it used to
+default to "."), an unsettled file raises an `amount_format_assumed` check with a two-way choice in the
+browser, and PDFs infer the convention from their own amounts.
+
+**Repeat purchases vs duplicates — a real totals bug.** The brief states two distinct INR 250 cafe
+purchases must stay INR 500. They didn't: same merchant + amount + date inside one statement was flagged
+as a duplicate, and flagged rows are excluded from verified totals, so genuine spending disappeared.
+Within one statement, a row now counts as repeated only when the two rows share a reference/UTR — two
+separate lines are two purchases. They are still flagged in `notes` for a look. The cross-document pass
+(the same file added twice, overlapping statements) is unchanged.
+
+**Effect on `dataset_public/`:** the two identical 2025-07-14 SWIGGY 850.00 rows on one card statement are
+now two purchases. July INR verified spend is 103,828.00 (was 102,978.00), the converted July total is
+145,071.96 (was 144,221.96), and the only remaining duplicate is the UBER 260.00 that genuinely appears in
+both the CSV and the PDF. Four tests asserting the old numbers were updated with the arithmetic shown.
+
+`tests/test_brief_acceptance.py` holds one test per row of the brief's acceptance table: repeat vs
+duplicate, card settlement and refund accounting, missing-month gaps, an OCR misread caught by a balance
+break, prompt injection and spreadsheet-formula safety, bounded errors, crash/retry/deletion, and the
+local file-level isolation that is all this build claims (hosted isolation is P2, not built).
+
+533 tests passing.

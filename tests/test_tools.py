@@ -128,10 +128,12 @@ class TestCurrencyConversion:
         result = aggregate_spending(
             ledger, category=None, date_from=date(2025, 7, 1), date_to=date(2025, 7, 31), convert_to="INR"
         )
-        # hand-computed: 102978.00 (INR-native) + 1727.85 + 29179.53 + 10336.58 (the three USD legs,
-        # each converted at its OWN transaction date's real ECB rate) = 144221.96
+        # hand-computed: 103828.00 (INR-native) + 1727.85 + 29179.53 + 10336.58 (the three USD legs,
+        # each converted at its OWN transaction date's real ECB rate) = 145071.96. The INR-native figure
+        # rose by the 850.00 same-day SWIGGY repeat that now counts as a second purchase (see
+        # TestVerifiedVsUncertainSplit) instead of being treated as a duplicate.
         assert result.converted.currency == "INR"
-        assert Decimal(result.converted.verified_total) == Decimal("144221.96")
+        assert Decimal(result.converted.verified_total) == Decimal("145071.96")
         assert result.converted.failed_conversion_count == 0
 
     def test_original_per_currency_breakdown_is_never_replaced_by_conversion(self):
@@ -141,7 +143,7 @@ class TestCurrencyConversion:
         )
         # the honest per-currency figures must still be there, untouched, alongside the converted total
         assert "INR" in result.by_currency and "USD" in result.by_currency
-        assert Decimal(result.by_currency["INR"].verified_total) == Decimal("102978.00")
+        assert Decimal(result.by_currency["INR"].verified_total) == Decimal("103828.00")  # 102978 + the 850 repeat
         assert Decimal(result.by_currency["USD"].verified_total) == Decimal("480.00")
 
     def test_uncertain_split_preserved_through_conversion(self):
@@ -149,9 +151,10 @@ class TestCurrencyConversion:
         result = aggregate_spending(
             ledger, category=None, date_from=date(2025, 7, 1), date_to=date(2025, 7, 31), convert_to="INR"
         )
-        # the two duplicate-flagged July transactions are INR-native (identity conversion) and
-        # must stay in the uncertain bucket of the converted total too, not silently verified
-        assert Decimal(result.converted.uncertain_total) == Decimal("1110.00")
+        # the remaining duplicate-flagged July transaction (the UBER 260.00 that appears in BOTH the CSV
+        # and the PDF) is INR-native (identity conversion) and must stay in the uncertain bucket of the
+        # converted total too, not silently verified
+        assert Decimal(result.converted.uncertain_total) == Decimal("260.00")
 
     def test_different_dates_use_different_rates_not_one_blended_rate(self):
         ledger = _ledger()
@@ -208,13 +211,17 @@ class TestCurrencyIsNeverBlended:
 
 
 class TestVerifiedVsUncertainSplit:
-    def test_duplicate_swiggy_charge_excluded_from_verified_dining_total(self):
+    def test_a_same_day_repeat_charge_still_counts_but_is_flagged(self):
+        # two identical SWIGGY 850 rows on one statement are two orders, not one row listed twice
+        # (completion brief, repeat-purchase case): both are in the verified dining total, and the
+        # second carries a flag in its notes for the person to check
         ledger = _ledger()
         result = aggregate_spending(ledger, category="Dining")
         inr = result.by_currency["INR"]
-        assert Decimal(inr.uncertain_total) == Decimal("850.00")
-        assert inr.uncertain_count == 1
-        assert "duplicate" in inr.uncertain_reasons[0]
+        assert inr.uncertain_count == 0 and Decimal(inr.uncertain_total) == Decimal("0")
+        same_day = [t for t in ledger if t.merchant_raw and "SWIGGY" in t.merchant_raw
+                    and str(t.transaction_date) == "2025-07-14"]
+        assert len(same_day) == 2 and sum(1 for t in same_day if "same merchant, amount and date" in t.notes) == 1
 
     def test_verified_plus_uncertain_equals_naive_sum(self):
         # the split must partition the data, not lose or double-count any of it

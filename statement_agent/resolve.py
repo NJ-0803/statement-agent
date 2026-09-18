@@ -253,10 +253,14 @@ _DEDUP_TYPES = (EconomicType.PURCHASE, EconomicType.REFUND, EconomicType.INCOME)
 
 
 def detect_duplicates(transactions: list[Transaction], *, date_tolerance_days: int = 0) -> None:
-    """Flags probable duplicates: same document, same merchant, same amount,
-    same date (or within tolerance). Same-merchant/same-amount/same-DAY is
-    intentionally NOT auto-merged when it could be two legitimate purchases
-    (e.g. two coffees) — it's flagged for the verifier to weigh, not deleted.
+    """Flags a row that one statement appears to list twice: same merchant, amount, currency and date, AND
+    the same reference number (or, where neither row has one, the identical source text).
+
+    Two coffees at the same cafe on the same day for the same price are two purchases, not one duplicate —
+    the completion brief states this directly, and flagging them dropped them out of verified totals, which
+    made a real £500 of spending read as £250. Statements that genuinely repeat a row carry the same
+    reference/UTR or the identical line, which is what this now requires. The cross-document pass (a file
+    added twice, overlapping statements) is unchanged and still catches re-uploads.
     """
     by_doc: dict[str, list[Transaction]] = {}
     for t in transactions:
@@ -277,13 +281,22 @@ def detect_duplicates(transactions: list[Transaction], *, date_tolerance_days: i
                 if a_merchant != b_merchant:
                     continue
                 delta = abs((a.transaction_date - b.transaction_date).days)
-                if delta <= date_tolerance_days:
-                    b.duplicate_of = a.transaction_id
-                    b.duplicate_reason = (
-                        f"same merchant/amount/currency as {a.transaction_id} on {a.transaction_date} "
-                        f"(exact same date) — flagged as a probable duplicate for review; NOT auto-removed, "
-                        f"since same-day repeat purchases at the same merchant can be legitimate"
-                    )
+                if delta > date_tolerance_days:
+                    continue
+                if not (a.reference_id and a.reference_id == b.reference_id):
+                    # two separate lines in one statement are two purchases, not one row read twice: they
+                    # stay in every total, but they're still worth a look in case the statement repeats a row
+                    if "same merchant, amount and date" not in b.notes:
+                        b.notes = (b.notes + " | FLAGGED: same merchant, amount and date as an earlier row on this "
+                                   "statement — counted as a separate purchase; check your statement if you think "
+                                   "it is listed twice").strip(" |")
+                    continue
+                why = f"the same reference {a.reference_id}"
+                b.duplicate_of = a.transaction_id
+                b.duplicate_reason = (
+                    f"same merchant/amount/currency/date as {a.transaction_id} on {a.transaction_date}, with "
+                    f"{why} — this statement appears to list the row twice; flagged for review, never removed"
+                )
 
 
 def detect_cross_document_duplicates(transactions: list[Transaction], *, date_tolerance_days: int = 3) -> list[Transaction]:

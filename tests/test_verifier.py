@@ -21,7 +21,7 @@ class TestGroundedAnswerPasses:
         trace = [ToolCallRecord("aggregate_spending", {"category": "Dining"}, result)]
 
         answer = FinalAnswer(
-            answer_text="You spent 13095.00 INR on dining, verified.",
+            answer_text=f"You spent {result.by_currency['INR'].verified_total} INR on dining, verified.",
             proposed_status="VERIFIED",
             verified_amounts=[ClaimedAmount(currency="INR", amount=result.by_currency["INR"].verified_total, label="dining spend")],
         )

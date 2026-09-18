@@ -133,7 +133,7 @@ class TestExtractionSequence:
 
 
 class TestDuplicateDetection:
-    def test_triple_swiggy_charge_flags_the_two_same_day_ones(self):
+    def test_triple_swiggy_charge_flags_the_two_same_day_ones_without_dropping_them(self):
         result = parse_pdf_native(os.path.join(STATEMENTS, "meridian_credit_card_jul2025.pdf"))
         detect_duplicates(result.transactions)
         swiggy = [t for t in result.transactions if "SWIGGY" in t.merchant_raw]
@@ -141,10 +141,12 @@ class TestDuplicateDetection:
         for t in swiggy:
             by_date.setdefault(t.transaction_date, []).append(t)
         same_day_pair = by_date[[d for d, v in by_date.items() if len(v) == 2][0]]
-        assert any(t.duplicate_of is not None for t in same_day_pair)
-        # the two same-day rows are linked to each other, not to the different-day one
+        # two separate lines on one statement are two purchases (the completion brief's repeat-purchase
+        # case), so they still count — but the second one is flagged for a look
+        assert all(t.duplicate_of is None for t in same_day_pair)
+        assert any("same merchant, amount and date" in t.notes for t in same_day_pair)
         different_day = [t for t in swiggy if t not in same_day_pair][0]
-        assert different_day.duplicate_of is None
+        assert different_day.duplicate_of is None and "same merchant, amount" not in different_day.notes
 
     def test_never_deletes_flagged_duplicates(self):
         result = parse_pdf_native(os.path.join(STATEMENTS, "meridian_credit_card_jul2025.pdf"))
@@ -331,8 +333,15 @@ class TestAnomalyDetection:
 
     def test_duplicate_flag_and_outlier_flag_are_both_surfaced(self):
         # regression test for a bug where the duplicate-flag list was built from an
-        # already-duplicate-excluded baseline and could never contain anything
+        # already-duplicate-excluded baseline and could never contain anything.
+        # A statement now has to REPEAT a row (same reference) for that row to be a duplicate — two
+        # separate same-day lines are two purchases — so the shared reference is set here to recreate it.
         result = parse_pdf_native(os.path.join(STATEMENTS, "meridian_credit_card_jul2025.pdf"))
+        same_day = [t for t in result.transactions
+                    if t.merchant_raw and "SWIGGY" in t.merchant_raw and str(t.transaction_date) == "2025-07-14"]
+        assert len(same_day) == 2
+        for t in same_day:
+            t.reference_id = "UTR-REPEATED-ROW"
         flags = resolve_all(result.document, result.transactions)
         reasons = [f.reason for f in flags]
         assert any("outlier" in r for r in reasons)
