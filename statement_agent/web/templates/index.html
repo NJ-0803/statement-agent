@@ -20,6 +20,9 @@
     --ink: #1b1c1e;
     --muted: #4f535a;
     --line: #cfccc3;
+    /* borders that outline a control (inputs, selects, buttons, the drop zone) carry meaning, so they
+       need 3:1 against every background they sit on — WCAG 2.2 AA 1.4.11. --line is decorative only. */
+    --field-line: #83868c;
     --accent: #1d5a86;
     --accent-ink: #ffffff;
     --accent-soft: #e3eef6;
@@ -36,7 +39,7 @@
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #141517; --surface: #1d1f22; --surface-2: #26292d; --ink: #f1f0ec; --muted: #b9bcc2;
-      --line: #3d4147; --accent: #8cc2ea; --accent-ink: #0d1b26; --accent-soft: #1f3445;
+      --line: #3d4147; --field-line: #727781; --accent: #8cc2ea; --accent-ink: #0d1b26; --accent-soft: #1f3445;
       --good: #8fd6a6; --good-soft: #1b3325; --warn: #f2c27a; --warn-soft: #3a2c14;
       --bad: #f3a3a6; --bad-soft: #3d1f21; --focus: #ffb870; color-scheme: dark;
     }
@@ -53,6 +56,14 @@
   :focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; border-radius: 6px; }
   .visually-hidden { position: absolute !important; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   [hidden] { display: none !important; }
+  /* the skip link is hidden until it is tabbed to, then it has to be on screen: a focus stop you
+     cannot see is the same as no focus indicator at all */
+  .skip:focus {
+    position: fixed !important; top: 0.6rem; left: 0.6rem; z-index: 20; width: auto; height: auto;
+    clip: auto; padding: 0.7rem 1.1rem; min-height: 48px; display: inline-flex; align-items: center;
+    background: var(--surface); color: var(--ink); border: 2px solid var(--accent); border-radius: 10px;
+    font-weight: 600; text-decoration: none;
+  }
 
   header.site { background: var(--surface); border-bottom: 1px solid var(--line); }
   header.site .wrap { padding-block: 1.1rem 0.6rem; }
@@ -92,13 +103,16 @@
     border: 2px solid var(--accent); background: var(--surface); color: var(--accent); text-decoration: none;
   }
   .btn.primary { background: var(--accent); color: var(--accent-ink); }
-  .btn.quiet { border-color: var(--line); color: var(--ink); }
+  .btn.quiet { border-color: var(--field-line); color: var(--ink); }
+  /* The two file inputs are visually hidden but still tab stops, so their focus ring lands on a 1px box
+     nobody can see. The label that stands in for each one wears the ring instead (WCAG 2.4.7). */
+  label:has(+ input.visually-hidden:focus-visible) { outline: 3px solid var(--focus); outline-offset: 3px; }
   .btn.danger { border-color: var(--bad); color: var(--bad); }
   .btn:disabled { opacity: 0.5; cursor: not-allowed; }
   .actions { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 1.25rem; }
 
   .dropzone {
-    display: block; border: 2px dashed var(--line); border-radius: var(--radius); padding: 1.75rem 1rem;
+    display: block; border: 2px dashed var(--field-line); border-radius: var(--radius); padding: 1.75rem 1rem;
     text-align: center; background: var(--surface); cursor: pointer;
   }
   .dropzone.over { border-color: var(--accent); background: var(--accent-soft); }
@@ -127,13 +141,13 @@
   th { background: var(--surface-2); font-weight: 600; }
   tr:last-child td { border-bottom: 0; }
   td.num { text-align: right; white-space: nowrap; }
-  select, input[type="text"] {
-    font: inherit; min-height: 44px; padding: 0.35rem 0.5rem; border: 1px solid var(--line); border-radius: 8px;
+  select, input[type="text"], input[type="password"] {
+    font: inherit; min-height: 44px; padding: 0.35rem 0.5rem; border: 1px solid var(--field-line); border-radius: 8px;
     background: var(--surface); color: var(--ink); max-width: 100%;
   }
   label.field { display: block; font-weight: 600; margin-bottom: 0.25rem; }
   .role-select label { display: block; font-size: 0.8rem; font-weight: 600; color: var(--muted); margin-bottom: 0.2rem; }
-  fieldset { border: 1px solid var(--line); border-radius: 10px; padding: 0.75rem 1rem; margin: 1rem 0 0; }
+  fieldset { border: 1px solid var(--field-line); border-radius: 10px; padding: 0.75rem 1rem; margin: 1rem 0 0; }
   legend { font-weight: 600; padding: 0 0.3rem; }
   .choice { display: flex; align-items: center; gap: 0.5rem; min-height: 44px; }
   .choice input { width: 1.25rem; height: 1.25rem; }
@@ -178,7 +192,7 @@
 </style>
 </head>
 <body>
-  <a class="visually-hidden" href="#main">Skip to content</a>
+  <a class="visually-hidden skip" href="#main">Skip to content</a>
   <header class="site">
     <div class="wrap">
       <h1>Statement Intelligence Agent</h1>

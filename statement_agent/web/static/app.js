@@ -233,7 +233,9 @@
   function resetToFiles() {
     wizard.queue = [];
     setStep('files');
-    $('#dropzone').focus();
+    // #dropzone is a <label>, which cannot take focus — focus the input it stands for, so keyboard
+    // users land back on "Choose statement files" instead of at the top of the document.
+    $('#file-input').focus();
   }
 
   async function nextJob() {
@@ -789,7 +791,7 @@
   }
 
   function txnItem(t) {
-    const li = h('li', {});
+    const li = h('li', { 'data-txn': t.id });
     const render = () => {
       li.replaceChildren(...[
         h('div', { class: 'row' }, h('strong', { text: t.merchant_name || t.description }), h('span', { class: 'txn-amount', text: signedMoney(t) })),
@@ -800,7 +802,13 @@
         ...(t.links || []).map(linkLine),
         t.merchant_name ? h('p', { class: 'muted', style: 'margin:.1rem 0 0', text: `Merchant name “${t.merchant_name}” — ${t.why.merchant}.` }) : null,
         h('div', { class: 'actions', style: 'margin-top:.5rem' },
-          h('button', { type: 'button', class: 'btn', text: 'Change', 'aria-label': `Change ${t.description}`, onclick: () => li.replaceChildren(editor(t, render)) })),
+          h('button', { type: 'button', class: 'btn', 'data-change': '1', text: 'Change',
+            'aria-label': `Change ${t.description}`, onclick: () => {
+              // opening the editor removes the button that holds focus; move focus to the editor's
+              // first field, and hand it back to this row's Change button when the editor closes
+              li.replaceChildren(editor(t, () => { render(); $('button[data-change]', li).focus(); }));
+              $('select, input', li).focus();
+            } })),
       ].filter(Boolean));
     };
     render();
@@ -843,6 +851,9 @@
         const n = res.changed;
         announce(n ? `Saved. ${plural(n, 'transaction')} updated.` : 'Saved. Nothing needed to change.');
         await loadTransactions();
+        // the save rebuilt every row, so put focus back on the row that was being edited
+        const back = $(`#txn-list li[data-txn="${CSS.escape(t.id)}"] button[data-change]`);
+        if (back) back.focus(); else focusHeading($('#view-txns'));
       } catch (e) { alerts.replaceChildren(errorBox(e.message)); }
     };
 
