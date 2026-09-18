@@ -98,12 +98,15 @@ nothing is written for it.
 python -m pytest tests/ -v
 ```
 
-355 tests, all runnable offline with no API key — they cover normalization (currency/date parsing),
+546 tests, all runnable offline with no API key (they run on 4 processes by default; add `-n 0` for one)
+— they cover normalization (currency/date parsing, including European 1.234,50 formats),
 structure detection and column-role inference for unfamiliar bank exports, staged import commit/rollback,
 PDF/CSV extraction (including the injection-defense and duplicate-detection tests described below),
 resolution (categorization, duplicates, reconciliation, anomaly detection), the query/aggregation
-tools, and the answer verifier's grounding/provenance checks. See `DECISIONS.md` §11 for the three real
-bugs found during development (two caught by this suite, one only found via live testing).
+tools, the answer verifier's evidence binding (currency, period, category and gross/net), links between
+related transactions, categorization that learns from your files, and the completion brief's acceptance
+cases in `tests/test_brief_acceptance.py`. See `DECISIONS.md` §11 for the three real bugs found during
+development, and §34–§42 for what each later batch changed and why.
 
 **Gold-answer eval harness** (`eval/gold_qa.py`) — the "don't trust your agent, verify it" artifact
 specifically:
@@ -207,12 +210,22 @@ runs as part of `pytest tests/` via `tests/test_gold_eval.py`, one test per case
 
 ## What it can't do (yet)
 
-- No LLM-assisted fallback categorization — an unrecognized merchant gets `category: None` rather than
-  a guessed category, which is correct-but-conservative (see `DECISIONS.md` §13 for what a soft-
-  confidence version would add).
-- No linking between related transactions (e.g. a refund isn't matched back to its original purchase)
-  — none of the current sample data has real transfer/refund pairs to build and test this against
-  (see `NOT_IMPLEMENTED.md` for the full, categorized list of what's out of scope and why).
+- **No accounts or logins.** One ledger file is one person's finances; people are kept apart by file
+  (`--client`), not by authentication. Nothing here is ready for shared hosting — see
+  `IMPLEMENTATION_STATUS.md` and `NOT_IMPLEMENTED.md` §I.
+- **No encryption at rest** and no retention policy: uploads and `ledger.db` sit unencrypted on this
+  machine. `backup`, `restore` and `wipe` exist; a passphrase lock does not.
+- **Some links aren't built:** EMI instalments to their original purchase, an FX markup fee to its
+  foreign charge, and pending-to-posted matching (refunds, transfers, card bills and recurring payments
+  are — `DECISIONS.md` §36).
+- **PDFs without a table header** still use the date-first/amount-last row rule, so a balance column can
+  be mistaken for the amount there (headed PDFs are read by column position, §38).
+- **Category suggestions from Groq are optional and off by default**, and they are a model's guesses:
+  they are applied, marked "from Groq", and correctable. Without a key, an unrecognised merchant simply
+  has no category.
+- **The 95-question evaluation bank has not been fully run:** 74 answered, 21 still blocked by API
+  credit at the time of the saved run. `eval/grade.py` grades what exists and reports the blocked cases
+  separately rather than as failures.
 
 The vision-OCR path and the live multi-turn agent loop have now been tested end-to-end against the
 real dataset with live API credits — see `DECISIONS.md` §12 for the full set of live results, all

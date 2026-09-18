@@ -301,3 +301,34 @@ class TestEuropeanAmountsEndToEnd:
         assert not any(i["rule"] == "amount_format_assumed" for i in store.get_staging(job.job_id)["issues"])
         pipeline.commit_import(store, job.job_id)
         assert sorted(str(t.amount) for t in store.all_transactions()) == ["1.234", "2.500"]
+
+
+class TestSpreadsheetFormulasWithoutResults:
+    """A spreadsheet written by a script often stores formulas with no saved result, and every such cell
+    then reads as empty. The rows are already reported as problems; the cause has to be sayable too."""
+
+    def _book(self, tmp_path, amount):
+        from openpyxl import Workbook
+
+        wb = Workbook()
+        ws = wb.active
+        ws.append(["Date", "Description", "Amount", "Currency"])
+        ws.append(["2025-06-01", "TEA", amount, "INR"])
+        ws.append(["2025-06-02", "COFFEE", 30, "INR"])
+        path = str(tmp_path / "f.xlsx")
+        wb.save(path)
+        return path
+
+    def test_the_cause_is_named_and_the_row_is_not_lost(self, store, tmp_path):
+        path = self._book(tmp_path, "=10*2")
+        job = pipeline.create_import(store, path, "f.xlsx")
+        job = pipeline.analyze_import(store, job.job_id, attempt_vision=False)
+        staging = store.get_staging(job.job_id)
+        rules = {i["rule"]: i for i in staging["issues"]}
+        assert "formulas_without_results" in rules and "C2" in rules["formulas_without_results"]["evidence"]
+        assert "missing_amount" in rules  # the affected row is still reported, never silently dropped
+        assert staging["counts"]["rows"] == 2
+
+    def test_an_ordinary_workbook_says_nothing_about_formulas(self, store, tmp_path):
+        _, txns = _add(store, self._book(tmp_path, 20))
+        assert len(txns) == 2

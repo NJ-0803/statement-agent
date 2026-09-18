@@ -55,6 +55,7 @@ class SniffResult:
     encoding: str | None = None
     delimiter: str | None = None
     sheets: list[dict] = field(default_factory=list)  # {"name", "state", "rows"}
+    formula_gaps: list[str] = field(default_factory=list)  # cells holding a formula whose result was never saved
     evidence: list[str] = field(default_factory=list)
 
     @property
@@ -144,6 +145,34 @@ def cell_to_str(value) -> str:
     if isinstance(value, float):
         return str(value)
     return str(value).strip()
+
+
+def find_uncached_formulas(path: str, limit: int = 20) -> list[str]:
+    """Cells whose formula has no saved result. Excel and LibreOffice normally store the last computed value
+    next to the formula, but a file written by a script (openpyxl, some bank portals) often has none — and
+    then every such cell reads as empty. Those cells are named rather than silently dropped."""
+    import openpyxl
+
+    try:
+        values = openpyxl.load_workbook(path, read_only=True, data_only=True)
+        formulas = openpyxl.load_workbook(path, read_only=True, data_only=False)
+    except Exception:  # noqa: BLE001 - detection must never be the thing that fails an import
+        return []
+    gaps: list[str] = []
+    try:
+        for sheet in formulas.sheetnames:
+            if sheet not in values.sheetnames:
+                continue
+            for formula_row, value_row in zip(formulas[sheet].iter_rows(), values[sheet].iter_rows()):
+                for formula_cell, value_cell in zip(formula_row, value_row):
+                    if value_cell.value in (None, "") and isinstance(formula_cell.value, str) and formula_cell.value.startswith("="):
+                        gaps.append(f"{sheet}!{formula_cell.coordinate} ({formula_cell.value})")
+                        if len(gaps) >= limit:
+                            return gaps
+    finally:
+        values.close()
+        formulas.close()
+    return gaps
 
 
 def read_xlsx_grids(path: str) -> list[tuple[str, str, list[list[str]]]]:
@@ -253,7 +282,11 @@ def sniff_csv(path: str) -> SniffResult:
 
 
 def sniff_xlsx(path: str) -> SniffResult:
-    return sniff_grids("xlsx", read_xlsx_grids(path))
+    result = sniff_grids("xlsx", read_xlsx_grids(path))
+    result.formula_gaps = find_uncached_formulas(path)
+    if result.formula_gaps:
+        result.evidence.append(f"{len(result.formula_gaps)} cell(s) hold a formula whose result was never saved")
+    return result
 
 
 def sniff_grids(kind: str, grids) -> SniffResult:

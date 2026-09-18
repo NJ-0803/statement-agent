@@ -316,6 +316,7 @@ def _run_tabular(job: ImportJob, staging: dict, decisions: ReviewDecisions) -> C
               else ExtractionMethod.RECORD if ext in EXTRA_TABULAR_EXTENSIONS - {".tsv", ".txt", ".tab", ".psv", ".dat"}
               else ExtractionMethod.CSV_ROW)
     result = parse_sniffed(job.stored_path, sniffed, extraction_method=method, mapping=mapping, decisions=decisions)
+    staging["formula_gaps"] = list(sniffed.formula_gaps)
     staging["sniff"] = {
         "kind": sniffed.kind, "encoding": sniffed.encoding, "delimiter": sniffed.delimiter,
         "sheets": sniffed.sheets, "evidence": sniffed.evidence,
@@ -498,6 +499,15 @@ def _evaluate(store: Store, job: ImportJob, staging: dict):
         staging["mapping"] = mapping.to_dict() if mapping else None
         document, transactions, issues = result.document, result.transactions, list(result.issues)
         ignored = [{"key": c.key, "row": c.source_row, "reason": c.reason} for c in result.candidates if c.outcome == "ignored"]
+        gaps = staging.get("formula_gaps") or []
+        if gaps:
+            issues.append(_doc_issue(
+                "formulas_without_results", IssueSeverity.CHECK,
+                f"{len(gaps)} cell(s) in this spreadsheet hold a formula but no saved result, so they read as "
+                f"empty (for example {gaps[0]}). Any row that needed one is listed as a problem below.",
+                "Open the file in Excel or LibreOffice and save it again so the results are stored, then add "
+                "it again — or export it as CSV.", evidence="; ".join(gaps[:5]),
+            ))
         needs_mapping = mapping is None or (mapping.needs_confirmation and mapping.source != "user")
         counts = {
             "rows": len(result.candidates),

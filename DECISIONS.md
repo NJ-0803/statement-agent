@@ -2035,3 +2035,36 @@ break, prompt injection and spreadsheet-formula safety, bounded errors, crash/re
 local file-level isolation that is all this build claims (hosted isolation is P2, not built).
 
 533 tests passing.
+
+## 43. Evaluation harness repair, formula caches, and the status checklist
+
+**Formula caches.** A spreadsheet written by a script often stores a formula with no saved result, and
+openpyxl's value view then reads the cell as empty. The rows were already reported as problems ("no
+amount"), but nothing said *why*. `sniff.find_uncached_formulas` compares the value view against the
+formula view and names the cells, and the import raises a `formulas_without_results` check telling the
+person to open and re-save the file, or export CSV.
+
+**Evaluation (the brief's "repair evaluation coverage").**
+- The 95-question bank now lives in the repo (`eval/question_bank.json`), extracted from the saved run, so
+  a run no longer depends on a spreadsheet in someone's Downloads folder. Passing an .xlsx refreshes it.
+- The runner passes linked economic events into the agent, supports `--resume` (keep answered cases,
+  retry only the ones an infrastructure error blocked), `--only` and `--limit`, and records what each tool
+  actually returned (numbers and transaction ids) alongside the answer.
+- `eval/grade.py` grades from those raw fields rather than from `verification_passed`, so the verifier
+  cannot mark its own homework. Every question lands in exactly one of: pass, refusal_ok,
+  needs_human_review, correctness_failure, infrastructure_error — the brief's requirement that correctness
+  failures, appropriate refusals and infrastructure errors be reported separately.
+
+**Actual result of grading the saved run** (`eval/report.md`): 95 questions — 74 answered, **21 still
+blocked by API credit**, 12 appropriate refusals, 11 correctness failures, 51 needing a human read. The 51
+are not a verdict: that run recorded tool *names* only, so amounts and citations cannot be re-checked from
+it, and the grader says exactly that instead of scoring them. A fresh run with the current runner would
+grade those mechanically. No live run was made here — each question is a paid API call, and the brief
+authorizes no spending.
+
+**`IMPLEMENTATION_STATUS.md`** is the checklist the brief's definition of done asks for: every P0/P1/P2
+line with built / partly / not built, where it lives, which acceptance cases pass, the release decisions
+still with the owner (licence, PyMuPDF's AGPL terms, provider retention), and what was never run
+(the blocked evaluation cases, live vision OCR, screen-reader and mobile checks, any real bank file).
+
+546 tests passing.
