@@ -115,3 +115,49 @@ def sweep(ttl_seconds: int = SANDBOX_TTL_SECONDS, now: float | None = None) -> i
         except OSError:
             continue
     return removed
+
+
+# ---------------------------------------------------------------- spending someone else's money
+
+DAILY_ASK_BUDGET = int(os.environ.get("STATEMENT_AGENT_DEMO_ASK_BUDGET", "200"))
+
+
+def _budget_file() -> str:
+    return os.path.join(demo_root(), "ask-budget.json")
+
+
+def take_ask_budget(cost: int = 1) -> tuple[bool, int]:
+    """Claim `cost` questions from today's allowance. Returns (allowed, remaining).
+
+    A public demo that answers questions is spending the owner's API credit, one visitor at a time,
+    and a link that does well is indistinguishable from abuse until the bill arrives. The per-client
+    rate limit does not help here: a thousand different clients each asking twice is still a
+    thousand calls. So the whole instance shares one daily allowance.
+
+    Counted in a file rather than in memory because a host usually runs several workers, and an
+    allowance each is not an allowance.
+    """
+    import json
+    from datetime import date as _date
+
+    today = _date.today().isoformat()
+    path = _budget_file()
+    try:
+        with open(path, encoding="utf-8") as f:
+            state = json.load(f)
+        if state.get("day") != today:
+            state = {"day": today, "used": 0}
+    except (OSError, ValueError):
+        state = {"day": today, "used": 0}
+
+    if state["used"] + cost > DAILY_ASK_BUDGET:
+        return False, max(0, DAILY_ASK_BUDGET - state["used"])
+    state["used"] += cost
+    try:
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(state, f)
+        os.replace(tmp, path)  # atomic, so two workers cannot leave it half-written
+    except OSError:
+        pass
+    return True, DAILY_ASK_BUDGET - state["used"]

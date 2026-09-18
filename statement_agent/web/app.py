@@ -780,6 +780,15 @@ def create_app(db_path: str = "ledger.db", *, upload_dir: str = UPLOAD_DIR, run_
         if not os.environ.get("ANTHROPIC_API_KEY"):
             return _error("ANTHROPIC_API_KEY is not set on the server.", 500)
 
+        if app.config["MODE"] == "demo":
+            # every question here spends the owner's API credit; the whole instance shares one
+            # daily allowance, because a per-client limit does nothing against many clients
+            allowed, remaining = demo.take_ask_budget()
+            if not allowed:
+                return _error("This demo has used up today's allowance for questions. Everything else "
+                              "still works — reading statements, categories, links and the CSV export. "
+                              "Questions come back tomorrow.", 429)
+
         path = _db_path()
         if not os.path.exists(path):
             return _error(f"No ledger found at '{path}'. Add a statement (or run ingest) first.", 400)

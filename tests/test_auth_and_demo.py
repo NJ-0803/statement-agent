@@ -253,3 +253,35 @@ class TestOneVisitorCannotSeeAnotherVisitorsFile:
                    and any("my-private-statement" in f
                            for _, _, files in os.walk(os.path.join(root, name)) for f in files)]
         assert len(holders) == 1, f"the uploaded file exists in {len(holders)} sandboxes, expected 1"
+
+
+class TestTheDemoCannotRunUpAnUnboundedBill:
+    def test_questions_stop_when_the_daily_allowance_is_gone(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("STATEMENT_AGENT_DEMO_ROOT", str(tmp_path / "demo"))
+        monkeypatch.setattr(demo, "DAILY_ASK_BUDGET", 3)
+        assert [demo.take_ask_budget()[0] for _ in range(5)] == [True, True, True, False, False]
+
+    def test_the_allowance_is_shared_rather_than_one_per_worker(self, tmp_path, monkeypatch):
+        """It is counted on disk: two processes must not each get a full allowance."""
+        monkeypatch.setenv("STATEMENT_AGENT_DEMO_ROOT", str(tmp_path / "demo"))
+        monkeypatch.setattr(demo, "DAILY_ASK_BUDGET", 2)
+        demo.take_ask_budget()
+        assert os.path.exists(os.path.join(demo.demo_root(), "ask-budget.json"))
+        assert demo.take_ask_budget()[0] is True
+        assert demo.take_ask_budget()[0] is False
+
+    def test_yesterdays_spend_does_not_count_against_today(self, tmp_path, monkeypatch):
+        import json
+        monkeypatch.setenv("STATEMENT_AGENT_DEMO_ROOT", str(tmp_path / "demo"))
+        monkeypatch.setattr(demo, "DAILY_ASK_BUDGET", 2)
+        with open(os.path.join(demo.demo_root(), "ask-budget.json"), "w") as f:
+            json.dump({"day": "2000-01-01", "used": 999}, f)
+        assert demo.take_ask_budget()[0] is True
+
+    def test_a_corrupt_counter_does_not_block_the_demo_or_uncap_it(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("STATEMENT_AGENT_DEMO_ROOT", str(tmp_path / "demo"))
+        monkeypatch.setattr(demo, "DAILY_ASK_BUDGET", 1)
+        with open(os.path.join(demo.demo_root(), "ask-budget.json"), "w") as f:
+            f.write("{not json")
+        assert demo.take_ask_budget()[0] is True
+        assert demo.take_ask_budget()[0] is False

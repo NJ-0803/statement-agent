@@ -98,7 +98,7 @@ nothing is written for it.
 python -m pytest tests/ -v
 ```
 
-553 tests, all runnable offline with no API key (they run on 4 processes by default; add `-n 0` for one)
+592 tests, all runnable offline with no API key (they run on 4 processes by default; add `-n 0` for one)
 — they cover normalization (currency/date parsing, including European 1.234,50 formats),
 structure detection and column-role inference for unfamiliar bank exports, staged import commit/rollback,
 PDF/CSV extraction (including the injection-defense and duplicate-detection tests described below),

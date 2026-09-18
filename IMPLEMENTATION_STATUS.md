@@ -4,7 +4,7 @@ Brief: *Statement Agent Completion Brief — Claude Code instructions and essent
 reviewed at commit `ce2ba995`. This file is the checklist that brief's "definition of done" asks for.
 Anything marked **not built** is not built; nothing here is marked done on the strength of a plan.
 
-Test suite: 553 tests, offline, no API key needed (`python -m pytest`). Live checks that were **not** run
+Test suite: 592 tests, offline, no API key needed (`python -m pytest`). Live checks that were **not** run
 are listed at the bottom.
 
 ## Priorities
@@ -28,14 +28,14 @@ are listed at the bottom.
 | P1 | Validate existing links and corrections | **Built** | `tests/test_linking.py`, `tests/test_corrections.py`, brief cases in `tests/test_brief_acceptance.py` |
 | P1 | EMI and FX settlement links | **Out of scope** — owner's decision, 18 Sep 2026 | — |
 | P1 | Disclose and control external AI calls | **Built** | Groq is off unless `GROQ_API_KEY` is set; `/api/status` reports it; only cleaned merchant words are sent; answers marked "from Groq" |
-| P1 | Minimize sensitive context and logs | **Partly** | card-number columns masked at intake; only merchant words leave the machine; no log redaction pass, and uploads/ledger are unencrypted |
+| P1 | Minimize sensitive context and logs | **Partly** | card-number columns masked at intake; only merchant words leave the machine; query strings, amounts and long digit runs are redacted from logs off localhost (`web/redact.py`). Uploads and the ledger are still unencrypted at rest |
 | P1 | Bound parser size, time, memory, queue | **Partly; the rest is out of scope** — owner's decision, 18 Sep 2026 | 25 MB per file, 20 files per request, 200k rows, 200 PDF pages, zip-ratio limits, per-client rate limits. Per-file CPU/memory/time limits and isolated worker processes are not being built |
 | P1 | Safe exports, cancellation, deletion, backup/restore | **Built** | formula-safe CSV export, cancel/rollback, delete everything, `backup`/`restore`/`wipe` (§40) |
 | P1 | Independent evaluation | **Harness built; run stays partial by the owner's decision** | `eval/question_bank.json`, `eval/run_red_team_bank.py --resume`, `eval/grade.py`; 74 of 95 answered, and the 21 blocked by API credit will not be run |
 | P1 | Accessible onboarding; keyboard, screen reader, zoom, mobile | **Keyboard, zoom and contrast checked and fixed; screen reader and a real phone still not tested** | keyboard/reflow/contrast pass of 18 Sep 2026 below; `tests/test_accessibility.py` |
 | P1 | Document supported formats/languages and uncertainty | **Built** | README "What it can't do (yet)", this file, `NOT_IMPLEMENTED.md` |
 | P1 | Update stale README claims | **Built** | README test count, capabilities and limits updated |
-| P2 | Authentication, per-owner authorization, private storage, durable jobs, quotas, monitoring, recovery tests | **Not planned** — stays listed in `NOT_IMPLEMENTED.md` §I | local mode only; no public hosting is authorized, and none is intended |
+| P2 | Authentication, per-owner authorization, private storage, durable jobs, quotas, monitoring, recovery tests | **Partly built** — the owner reversed the 18 Sep "not planned" decision to host a public demo | Authentication, a deny-by-default route gate, an isolated demo mode, log redaction and a shared daily API allowance are built (`web/auth.py`, `web/demo.py`, `web/redact.py`, `DEPLOY.md`). Per-owner authorization, encryption at rest, durable jobs and monitoring are not |
 
 ## Acceptance cases
 
@@ -88,8 +88,9 @@ Asked for by the brief, declined by the owner — not deferred, not forgotten:
 - An original-source viewer for cited pages and rows.
 - Re-running the 21 evaluation questions that API credit blocked: the run stays at 74 of 95, and
   `eval/report.md` reports those 21 as infrastructure errors, never as passes or failures.
-- All P2 hosting work (authentication, per-owner authorization, hosted storage, durable jobs, quotas,
-  monitoring). Local mode is the product; the list stays in `NOT_IMPLEMENTED.md` §I.
+- ~~All P2 hosting work.~~ **Reversed on 18 Sep 2026**: the owner decided to host a public demo, so
+  authentication, demo isolation, log redaction and an API spend cap were built. What is still not
+  built is per-owner authorization, encryption at rest, durable jobs and monitoring — see `DEPLOY.md`.
 
 ## Release decisions still with the owner
 
