@@ -21,15 +21,15 @@ are listed at the bottom.
 | P1 | Reconcile stated totals | **Built** | `statement_totals.py`, `resolve.reconcile_document` (§34) |
 | P1 | Missing spreadsheet formula caches | **Built** | `sniff.find_uncached_formulas`, `formulas_without_results` check |
 | P1 | Original-source viewer for cited pages/rows | **Not built** | citations carry file/page/row and the extracted text, but nothing renders the original page |
-| P1 | Stable account identity | **Not built** | `account_name` per row only; no account record, no identity across files (`NOT_IMPLEMENTED.md` §H) |
+| P1 | Stable account identity | **Out of scope** — owner's decision, 18 Sep 2026 | `account_name` per row is kept; no account record or cross-file identity |
 | P1 | Transaction vs posted date | **Partly** | `value_date` is kept separate from `transaction_date`; there is no documented policy for which drives period totals |
-| P1 | Pending-to-posted matching | **Not built** | — |
+| P1 | Pending-to-posted matching | **Out of scope** — owner's decision, 18 Sep 2026 | — |
 | P1 | Explicit cross-month refund treatment | **Built** | `net_spending` attributes a refund to its purchase's month and category, and lists what it did not subtract |
 | P1 | Validate existing links and corrections | **Built** | `tests/test_linking.py`, `tests/test_corrections.py`, brief cases in `tests/test_brief_acceptance.py` |
-| P1 | EMI and FX settlement links | **Not built** (deliberately: no tested policy) | — |
+| P1 | EMI and FX settlement links | **Out of scope** — owner's decision, 18 Sep 2026 | — |
 | P1 | Disclose and control external AI calls | **Built** | Groq is off unless `GROQ_API_KEY` is set; `/api/status` reports it; only cleaned merchant words are sent; answers marked "from Groq" |
 | P1 | Minimize sensitive context and logs | **Partly** | card-number columns masked at intake; only merchant words leave the machine; no log redaction pass, and uploads/ledger are unencrypted |
-| P1 | Bound parser size, time, memory, queue | **Partly** | 25 MB per file, 20 files per request, 200k rows, 200 PDF pages, zip-ratio limits, per-client rate limits; **no** per-file CPU/memory/time limit or isolated worker process |
+| P1 | Bound parser size, time, memory, queue | **Partly; the rest is out of scope** — owner's decision, 18 Sep 2026 | 25 MB per file, 20 files per request, 200k rows, 200 PDF pages, zip-ratio limits, per-client rate limits. Per-file CPU/memory/time limits and isolated worker processes are not being built |
 | P1 | Safe exports, cancellation, deletion, backup/restore | **Built** | formula-safe CSV export, cancel/rollback, delete everything, `backup`/`restore`/`wipe` (§40) |
 | P1 | Independent evaluation | **Built (harness), partly run** | `eval/question_bank.json`, `eval/run_red_team_bank.py --resume`, `eval/grade.py`; 74 of 95 answered, 21 blocked by API credit |
 | P1 | Accessible onboarding; keyboard, screen reader, zoom, mobile | **Not verified** | built to the guidelines (18px base, 48px targets, labels, live regions, no dialogs); never tested with a screen reader or on a phone |
@@ -53,6 +53,15 @@ locale cases in their own files). The four failures the brief reported were repr
 | Prompt injection and unsafe content | Passing (instructions are inert; exported formulas are prefixed; HTML is data, never markup) |
 | Isolation and resource abuse | Local file-level isolation only; bounded errors covered. Hosted isolation is P2, not built |
 | Crash retry and deletion | Passing (atomic commit, interrupted jobs failed on restart, rollback is final) |
+
+## Explicitly out of scope (owner's decision, 18 Sep 2026)
+
+Asked for by the brief, declined by the owner — not deferred, not forgotten:
+
+- Stable account identity across files.
+- Pending-to-posted matching.
+- EMI and FX settlement links.
+- Per-file CPU / memory / time limits and isolated parser worker processes.
 
 ## Release decisions still with the owner
 

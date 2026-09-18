@@ -392,8 +392,9 @@ research work that can't be done in code at all.
 - Local controls now exist (§40): delete everything (web + CLI), backup/restore, request rate limits.
 - No object storage, KMS-managed encryption at rest, quarantine bucket, WAF, or retention/deletion policy.
   Uploads sit unencrypted in `uploaded_documents/` (gitignored); rollback and cancel delete that import's file.
-- Reading runs on an in-process thread pool, not isolated queue workers with CPU/memory/time limits, bounded
-  retries or a dead-letter path. There's a manual retry, and jobs interrupted by a crash are marked failed.
+- Reading runs on an in-process thread pool. Isolated queue workers with CPU/memory/time limits are **out of
+  scope by the owner's decision (18 Sep 2026)**; size, row, page, file-count and rate limits do apply, there's
+  a manual retry, and jobs interrupted by a crash are marked failed.
 - No malware scanning or content disarm. Uploads get signature, macro and zip-ratio checks only.
 - No observability stack, SLOs, rate limits, load tests, backups/restore drills or penetration test.
 
@@ -420,8 +421,10 @@ research work that can't be done in code at all.
 - No WCAG 2.2 AA audit with screen readers, and no usability sessions with older adults.
 - No Hindi or regional language, text-to-speech or voice input.
 - No trusted-person sharing or alerts.
-- Recurring-payment, refund/reversal and transfer linking are built (§36); EMI, FX-fee and pending links aren't.
-- No separate `Account` record with masked identity, and no `booking_date` distinct from `transaction_date`.
+- Recurring-payment, refund/reversal and transfer linking are built (§36). EMI, FX-fee and pending-to-posted
+  links are **out of scope by the owner's decision (18 Sep 2026)**, not deferred.
+- No separate `Account` record with masked identity: **out of scope by the owner's decision (18 Sep 2026)**.
+  `value_date` is kept distinct from `transaction_date`, but no policy says which drives period totals.
 
 **Legal and regulatory (roadmap §5.2–5.3) — needs counsel, not code**
 - DPDP Act / DPDP Rules 2025 notice, consent, retention, breach and grievance design.
