@@ -7,52 +7,75 @@
 <title>Statement Intelligence Agent</title>
 <style>
   /*
-   * Calm and readable by default, for everyone — not a separate "simple mode".
-   * Large body text, one clear primary action per step, sentence case, visible
-   * labels, 48px targets, status always given in words (never color alone), and
-   * WCAG 2.2 AA contrast in both light and dark. No web fonts: nothing leaves
-   * this machine just to draw text.
+   * Bhookmark house look (see the bhookmark-ui skill): warm graphite and burgundy, Evening by
+   * default with Daylight following the system setting. Ported to a ledger rather than a menu, so
+   * Instrument Serif carries only the wordmark and every figure stays in a tabular Inter — a serif
+   * is the wrong tool for a column of amounts.
+   *
+   * Fonts are self-hosted. A public demo that pulled them from Google would tell Google who read
+   * the page, which is not a trade this app makes for typography.
+   *
+   * Accessibility is not traded for the palette: text pairs stay >=4.5:1, control outlines >=3:1
+   * (--field-line, because --line is decorative and sits near 1.4:1), focus is always visible, and
+   * status is always given in words as well as colour.
    */
-  :root {
-    --bg: #f6f5f1;
-    --surface: #ffffff;
-    --surface-2: #efede7;
-    --ink: #1b1c1e;
-    --muted: #4f535a;
-    --line: #cfccc3;
-    /* borders that outline a control (inputs, selects, buttons, the drop zone) carry meaning, so they
-       need 3:1 against every background they sit on — WCAG 2.2 AA 1.4.11. --line is decorative only. */
-    --field-line: #83868c;
-    --accent: #1d5a86;
-    --accent-ink: #ffffff;
-    --accent-soft: #e3eef6;
-    --good: #1d6a39;
-    --good-soft: #e4f2e8;
-    --warn: #7f4d00;
-    --warn-soft: #fbf0dc;
-    --bad: #9f2328;
-    --bad-soft: #f9e4e4;
-    --focus: #b0540b;
-    --radius: 12px;
-    color-scheme: light;
+  @font-face {
+    font-family: "Instrument Serif"; font-style: normal; font-weight: 400; font-display: swap;
+    src: url("{{ url_for('static', filename='fonts/instrument-serif-400-latin.woff2') }}") format("woff2");
   }
-  @media (prefers-color-scheme: dark) {
+  @font-face {
+    font-family: "InterVariable"; font-style: normal; font-weight: 100 900; font-display: swap;
+    src: url("{{ url_for('static', filename='fonts/inter-latin.woff2') }}") format("woff2");
+  }
+
+  :root {
+    /* Evening */
+    --bg: #151412;
+    --surface: #23211F;
+    --surface-2: #2D2A27;
+    --line: #3A3531;
+    --field-line: #83786D;
+    --ink: #F3EEE7;
+    --muted: #BDB3A9;
+    --faint: #9D948B;
+    --accent: #8E3340;
+    --accent-ink: #F3EEE7;
+    --accent-soft: #341D21;
+    --rose: #D89CA4;
+    --good: #9CC6A4;
+    --good-soft: #1C3123;
+    --warn-ink: #F3EEE7;
+    --warn-soft: #2D2A27;
+    --bad: #E58A92;
+    --bad-soft: #321A1D;
+    --focus: #D89CA4;
+    --radius: 22px;
+    --radius-sm: 12px;
+    --shadow-card: inset 0 1px 0 rgb(255 255 255 / 0.05), 0 16px 36px -20px rgb(0 0 0 / 0.7);
+    color-scheme: dark;
+  }
+  @media (prefers-color-scheme: light) {
     :root {
-      --bg: #141517; --surface: #1d1f22; --surface-2: #26292d; --ink: #f1f0ec; --muted: #b9bcc2;
-      --line: #3d4147; --field-line: #727781; --accent: #8cc2ea; --accent-ink: #0d1b26; --accent-soft: #1f3445;
-      --good: #8fd6a6; --good-soft: #1b3325; --warn: #f2c27a; --warn-soft: #3a2c14;
-      --bad: #f3a3a6; --bad-soft: #3d1f21; --focus: #ffb870; color-scheme: dark;
+      /* Daylight */
+      --bg: #F3EEE7; --surface: #FFFCF8; --surface-2: #E9E1D7; --line: #DCD2C6;
+      --field-line: #7E7367; --ink: #231E1A; --muted: #5A5048; --faint: #645A51;
+      --accent: #8E3340; --accent-ink: #F3EEE7; --accent-soft: #F2DEE0; --rose: #8E3340;
+      --good: #2F6B42; --good-soft: #DCEBE0; --warn-ink: #231E1A; --warn-soft: #E9E1D7;
+      --bad: #A12D38; --bad-soft: #F8E2E3; --focus: #8E3340;
+      --shadow-card: inset 0 1px 0 rgb(255 255 255 / 0.8), 0 14px 32px -20px rgb(60 40 30 / 0.28);
+      color-scheme: light;
     }
   }
   * { box-sizing: border-box; }
   html { font-size: 112.5%; } /* 18px, scales with browser zoom and user font settings */
   body {
     margin: 0; background: var(--bg); color: var(--ink);
-    font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", "Noto Sans Devanagari", sans-serif;
-    line-height: 1.55;
+    font-family: "InterVariable", Inter, system-ui, -apple-system, "Segoe UI", Roboto,
+                 "Noto Sans", "Noto Sans Devanagari", sans-serif;
+    line-height: 1.55; letter-spacing: -0.005em; -webkit-font-smoothing: antialiased;
   }
   .wrap { max-width: 52rem; margin: 0 auto; padding-inline: 1rem; }
-  a { color: var(--accent); }
+  a { color: var(--rose); }
   :focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; border-radius: 6px; }
   .visually-hidden { position: absolute !important; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   [hidden] { display: none !important; }
@@ -67,27 +90,34 @@
 
   header.site { background: var(--surface); border-bottom: 1px solid var(--line); }
   header.site .wrap { padding-block: 1.1rem 0.6rem; }
-  header.site h1 { margin: 0; font-size: 1.45rem; line-height: 1.25; }
+  header.site h1 {
+    margin: 0; font-family: "Instrument Serif", Georgia, "Times New Roman", serif;
+    font-weight: 400; font-size: 2rem; line-height: 1.15; letter-spacing: 0;
+  }
   header.site p { margin: 0.25rem 0 0.8rem; color: var(--muted); }
   nav.tabs { display: flex; gap: 0.4rem; flex-wrap: wrap; }
   nav.tabs button {
-    min-height: 48px; padding: 0.5rem 1rem; font: inherit; font-weight: 600; color: var(--muted);
+    min-height: 48px; padding: 0.5rem 1rem; font: inherit; font-weight: 500; color: var(--muted);
     background: transparent; border: 0; border-bottom: 3px solid transparent; cursor: pointer;
   }
   nav.tabs button[aria-current="page"] { color: var(--ink); border-bottom-color: var(--accent); }
 
   main { padding-block: 1.5rem 3rem; }
+  h2, h3 { font-weight: 600; letter-spacing: -0.015em; }
   h2 { font-size: 1.3rem; line-height: 1.3; margin: 0 0 0.5rem; }
   h3 { font-size: 1.1rem; margin: 1.25rem 0 0.5rem; }
   p { margin: 0 0 0.8rem; }
   .muted { color: var(--muted); }
-  .panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 1.25rem; }
+  .panel {
+    background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 1.25rem; box-shadow: var(--shadow-card);
+  }
   .stack > * + * { margin-top: 1rem; }
 
   ol.steps { list-style: none; display: flex; flex-wrap: wrap; gap: 0.5rem; padding: 0; margin: 0 0 1.25rem; counter-reset: step; }
   ol.steps li {
     counter-increment: step; display: flex; align-items: center; gap: 0.45rem; padding: 0.3rem 0.8rem 0.3rem 0.35rem;
-    border-radius: 999px; background: var(--surface-2); color: var(--muted); font-size: 0.9rem; font-weight: 600;
+    border-radius: 999px; background: var(--surface-2); color: var(--muted); font-size: 0.9rem; font-weight: 500;
   }
   ol.steps li::before {
     content: counter(step); display: inline-grid; place-items: center; width: 1.7rem; height: 1.7rem;
@@ -99,34 +129,39 @@
 
   .btn {
     display: inline-flex; align-items: center; justify-content: center; gap: 0.4rem; min-height: 48px;
-    padding: 0.55rem 1.2rem; font: inherit; font-weight: 600; border-radius: 10px; cursor: pointer;
-    border: 2px solid var(--accent); background: var(--surface); color: var(--accent); text-decoration: none;
+    padding: 0.55rem 1.2rem; font: inherit; font-weight: 500; border-radius: 999px; cursor: pointer;
+    border: 2px solid var(--accent); background: transparent; color: var(--rose); text-decoration: none;
   }
   .btn.primary { background: var(--accent); color: var(--accent-ink); }
-  .btn.quiet { border-color: var(--field-line); color: var(--ink); }
+  .btn.quiet { border-color: var(--field-line); color: var(--ink); background: var(--surface); }
   /* The two file inputs are visually hidden but still tab stops, so their focus ring lands on a 1px box
      nobody can see. The label that stands in for each one wears the ring instead (WCAG 2.4.7). */
   label:has(+ input.visually-hidden:focus-visible) { outline: 3px solid var(--focus); outline-offset: 3px; }
-  .btn.danger { border-color: var(--bad); color: var(--bad); }
+  .btn.danger { border-color: var(--bad); color: var(--bad); background: transparent; }
   .btn:disabled { opacity: 0.5; cursor: not-allowed; }
   .actions { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 1.25rem; }
 
   .dropzone {
     display: block; border: 2px dashed var(--field-line); border-radius: var(--radius); padding: 1.75rem 1rem;
-    text-align: center; background: var(--surface); cursor: pointer;
+    text-align: center; background: var(--surface); cursor: pointer; box-shadow: var(--shadow-card);
   }
   .dropzone.over { border-color: var(--accent); background: var(--accent-soft); }
-  .dropzone strong { display: block; font-size: 1.1rem; margin-bottom: 0.3rem; }
+  .dropzone strong {
+    display: block; font-family: "Instrument Serif", Georgia, serif; font-weight: 400;
+    font-size: 1.4rem; margin-bottom: 0.3rem; letter-spacing: 0;
+  }
   ul.files { list-style: none; padding: 0; margin: 1rem 0 0; }
   ul.files li {
     display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; flex-wrap: wrap;
-    padding: 0.55rem 0.8rem; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); margin-top: 0.5rem;
+    padding: 0.55rem 0.8rem; border: 1px solid var(--line); border-radius: var(--radius-sm);
+    background: var(--surface); margin-top: 0.5rem;
   }
-  .note { font-size: 0.92rem; color: var(--muted); border-left: 4px solid var(--line); padding-left: 0.8rem; }
+  .note { font-size: 0.92rem; color: var(--muted); border-left: 3px solid var(--accent); padding-left: 0.8rem; }
 
-  .status { display: inline-flex; align-items: center; gap: 0.35rem; font-weight: 600; font-size: 0.92rem; padding: 0.15rem 0.6rem; border-radius: 999px; }
+  .status { display: inline-flex; align-items: center; gap: 0.35rem; font-weight: 600; font-size: 0.92rem; padding: 0.15rem 0.7rem; border-radius: 999px; }
   .status.good { background: var(--good-soft); color: var(--good); }
-  .status.warn { background: var(--warn-soft); color: var(--warn); }
+  /* no amber in this palette: "check this" is a neutral chip and the words carry the meaning */
+  .status.warn { background: var(--warn-soft); color: var(--warn-ink); border: 1px solid var(--field-line); }
   .status.bad { background: var(--bad-soft); color: var(--bad); }
   .status.info { background: var(--surface-2); color: var(--muted); }
 
@@ -135,59 +170,73 @@
   dl.facts dt { color: var(--muted); }
   dl.facts dd { margin: 0; }
 
-  .table-scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+  .table-scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface); }
   table { border-collapse: collapse; width: 100%; font-size: 0.92rem; font-variant-numeric: tabular-nums; }
   th, td { padding: 0.5rem 0.65rem; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
   th { background: var(--surface-2); font-weight: 600; }
   tr:last-child td { border-bottom: 0; }
   td.num { text-align: right; white-space: nowrap; }
   select, input[type="text"], input[type="password"] {
-    font: inherit; min-height: 44px; padding: 0.35rem 0.5rem; border: 1px solid var(--field-line); border-radius: 8px;
+    font: inherit; min-height: 44px; padding: 0.35rem 0.6rem; border: 1px solid var(--field-line); border-radius: 10px;
     background: var(--surface); color: var(--ink); max-width: 100%;
   }
   label.field { display: block; font-weight: 600; margin-bottom: 0.25rem; }
   .role-select label { display: block; font-size: 0.8rem; font-weight: 600; color: var(--muted); margin-bottom: 0.2rem; }
-  fieldset { border: 1px solid var(--field-line); border-radius: 10px; padding: 0.75rem 1rem; margin: 1rem 0 0; }
+  fieldset { border: 1px solid var(--field-line); border-radius: var(--radius-sm); padding: 0.75rem 1rem; margin: 1rem 0 0; }
   legend { font-weight: 600; padding: 0 0.3rem; }
   .choice { display: flex; align-items: center; gap: 0.5rem; min-height: 44px; }
-  .choice input { width: 1.25rem; height: 1.25rem; }
+  .choice input { width: 1.25rem; height: 1.25rem; accent-color: var(--accent); }
 
-  .issue { border-left: 6px solid var(--warn); }
+  .issue { border-left: 5px solid var(--field-line); }
   .issue.blocking { border-left-color: var(--bad); }
-  .evidence { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 0.85rem; background: var(--surface-2); padding: 0.6rem 0.75rem; border-radius: 8px; overflow-wrap: anywhere; }
+  .evidence {
+    font-family: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 0.85rem;
+    background: var(--surface-2); padding: 0.6rem 0.75rem; border-radius: 10px; overflow-wrap: anywhere;
+  }
 
   .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: 0.75rem; margin-top: 1rem; }
-  .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 1rem; }
+  .card {
+    background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 1rem; box-shadow: var(--shadow-card);
+  }
   .card .k { color: var(--muted); font-size: 0.92rem; }
-  .card .v { font-size: 1.35rem; font-weight: 700; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  .card .v { font-size: 1.45rem; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; letter-spacing: -0.02em; }
 
   ul.imports { list-style: none; padding: 0; margin: 0; }
-  ul.imports li { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 1rem; margin-top: 0.75rem; }
+  ul.imports li {
+    background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 1rem; margin-top: 0.75rem; box-shadow: var(--shadow-card);
+  }
   ul.imports .row { display: flex; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap; align-items: baseline; }
 
   .filter-bar { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: flex-end; }
   .filter-bar > div { flex: 1 1 12rem; }
   .filter-bar input, .filter-bar select { width: 100%; }
-  .txn-amount { font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .txn-amount { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; letter-spacing: -0.01em; }
   .editor { margin-top: 0.75rem; border-top: 1px solid var(--line); padding-top: 0.75rem; }
   .editor input[type="text"] { width: 100%; }
   .editor .indent { margin: 0.25rem 0 0 1.75rem; }
   #chat { display: flex; flex-direction: column; gap: 1rem; margin-top: 1rem; }
   .q { align-self: flex-end; background: var(--accent-soft); border-radius: var(--radius); padding: 0.6rem 0.9rem; max-width: 85%; }
-  .a { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 1rem; }
+  .a { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 1rem; box-shadow: var(--shadow-card); }
   .a .answer-text { white-space: pre-wrap; }
-  .a img { max-width: 100%; border-radius: 8px; margin-top: 0.75rem; background: #fff; }
+  .a img { max-width: 100%; border-radius: var(--radius-sm); margin-top: 0.75rem; background: #fff; }
   .a details { margin-top: 0.75rem; }
   .a summary { cursor: pointer; font-weight: 600; min-height: 44px; display: flex; align-items: center; }
   .ask-row { display: flex; gap: 0.6rem; flex-wrap: wrap; margin-top: 0.5rem; }
   .ask-row input { flex: 1 1 16rem; }
   .suggestions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.75rem; }
-  .suggestions .btn { font-weight: 500; }
-  .banner { padding: 0.75rem 1rem; border-radius: 10px; background: var(--surface-2); margin-bottom: 1rem; }
+  .suggestions .btn { font-weight: 400; }
+  .banner { padding: 0.75rem 1rem; border-radius: var(--radius-sm); background: var(--surface-2); margin-bottom: 1rem; }
   .banner.bad { background: var(--bad-soft); color: var(--bad); }
+  /* the demo notice: the warning is carried by the words, never by the colour alone */
+  .banner.demo { background: var(--accent-soft); color: var(--ink); border: 1px solid var(--accent); }
+  .banner.demo p + p { margin-top: 0.5rem; }
 
   @media (prefers-reduced-motion: no-preference) {
-    .btn, nav.tabs button { transition: background-color 120ms ease, border-color 120ms ease; }
+    .btn, nav.tabs button { transition: background-color 160ms cubic-bezier(.2,.7,.3,1), border-color 160ms cubic-bezier(.2,.7,.3,1), transform 120ms cubic-bezier(.2,.7,.3,1); }
+    .btn:active { transform: scale(0.97); }
+    ul.imports li, .card, .a { transition: box-shadow 220ms cubic-bezier(.2,.7,.3,1); }
   }
 </style>
 </head>
@@ -210,6 +259,16 @@
 
   <main id="main" class="wrap" tabindex="-1">
     <noscript><p class="banner bad">This page needs JavaScript turned on.</p></noscript>
+    {% if mode == 'demo' %}
+    <div class="banner demo" role="note">
+      <p><strong>This is a demo.</strong> The statements loaded here are made up, and everything you do
+      stays in your own copy — nobody else sees it, and it is deleted about
+      {{ demo_ttl_minutes }} minutes after you stop.</p>
+      <p style="margin:0"><strong>Please don't upload a real bank statement.</strong> You're welcome to
+      try your own file to see how the reading works, but this is a public demo on a shared machine, so
+      use something you'd be happy for a stranger to see.</p>
+    </div>
+    {% endif %}
     <div id="status-bar" class="banner" role="status">Checking your statements…</div>
 
     <!-- ============ Add statements: the four-step guided flow ============ -->

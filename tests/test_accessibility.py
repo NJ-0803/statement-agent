@@ -29,10 +29,14 @@ def _contrast(fg: str, bg: str) -> float:
 
 
 def _token(name: str, *, dark: bool) -> str:
-    """The value of a CSS custom property, from the light block or the dark-mode block."""
-    block = HTML.split("prefers-color-scheme: dark")[1] if dark else HTML.split("prefers-color-scheme: dark")[0]
+    """A CSS custom property's value, from the Evening (default, dark) or Daylight block.
+
+    Evening is :root; Daylight lives under prefers-color-scheme: light.
+    """
+    split = HTML.split("prefers-color-scheme: light")
+    block = split[0] if dark else split[1]
     match = re.search(rf"{re.escape(name)}:\s*(#[0-9a-fA-F]{{6}})", block)
-    assert match, f"{name} not defined in the {'dark' if dark else 'light'} theme"
+    assert match, f"{name} not defined in the {'Evening' if dark else 'Daylight'} theme"
     return match.group(1)
 
 
@@ -93,3 +97,56 @@ class TestFocusIsNeverDroppedOnTheBody:
         # a save rebuilds every row in the list
         assert 'li[data-txn="${CSS.escape(t.id)}"] button[data-change]' in APP_JS
         assert "'data-txn': t.id" in APP_JS
+
+
+class TestTheBhookmarkPaletteStillMeetsTextContrast:
+    """Adopting the house palette must not cost any of the contrast checked on 18 Sep 2026."""
+
+    PAIRS = [
+        ("--ink", "--bg", "body text"),
+        ("--ink", "--surface", "text on a card"),
+        ("--muted", "--bg", "secondary text on the page"),
+        ("--muted", "--surface", "secondary text on a card"),
+        ("--muted", "--surface-2", "secondary text on a step chip and table head"),
+        ("--rose", "--bg", "links"),
+        ("--rose", "--surface", "outline button labels"),
+        ("--accent-ink", "--accent", "text on a burgundy button"),
+        ("--good", "--good-soft", "the good status chip"),
+        ("--warn-ink", "--warn-soft", "the check-this status chip"),
+        ("--bad", "--bad-soft", "the problem status chip"),
+        ("--bad", "--surface", "the danger button label"),
+        ("--ink", "--accent-soft", "the current step chip and the demo banner"),
+    ]
+
+    def test_every_text_pair_clears_four_and_a_half_to_one(self):
+        failures = []
+        for fg, bg, what in self.PAIRS:
+            for dark in (False, True):
+                ratio = _contrast(_token(fg, dark=dark), _token(bg, dark=dark))
+                if ratio < 4.5:
+                    failures.append(f"{'Evening' if dark else 'Daylight'} {what}: {ratio:.2f}:1")
+        assert not failures, failures
+
+    def test_the_focus_ring_is_visible_against_every_background(self):
+        for dark in (False, True):
+            focus = _token("--focus", dark=dark)
+            for surface in ("--bg", "--surface", "--surface-2"):
+                ratio = _contrast(focus, _token(surface, dark=dark))
+                assert ratio >= 3.0, f"{'Evening' if dark else 'Daylight'} focus on {surface}: {ratio:.2f}:1"
+
+    def test_no_gold_saffron_or_amber_entered_the_palette(self):
+        # a standing rule of the design system, and easy to reintroduce by reaching for a warning colour
+        tokens = re.findall(r"--[\w-]+:\s*(#[0-9a-fA-F]{6})", HTML)
+        offenders = []
+        for value in set(tokens):
+            r, g, b = (int(value[i:i + 2], 16) for i in (1, 3, 5))
+            if r > 150 and 90 < g < 210 and b < 90 and r - b > 90 and g - b > 40:
+                offenders.append(value)
+        assert not offenders, f"amber/gold tones in the palette: {offenders}"
+
+    def test_the_fonts_are_served_from_this_app_not_a_third_party(self):
+        assert "fonts.googleapis.com" not in HTML and "fonts.gstatic.com" not in HTML
+        assert HTML.count("@font-face") >= 2
+        for name in ("instrument-serif-400-latin.woff2", "inter-latin.woff2"):
+            assert name in HTML
+            assert os.path.exists(os.path.join(WEB, "static", "fonts", name)), f"{name} is referenced but missing"

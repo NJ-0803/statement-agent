@@ -161,17 +161,85 @@ def _print_trace(result) -> None:
 
 
 def _cmd_serve(args: argparse.Namespace) -> None:
-    db_path = _resolve_db_or_exit(args)
+    from .web import auth, demo
+
+    mode = auth.mode()
     if not os.environ.get("ANTHROPIC_API_KEY"):
         print("WARNING: ANTHROPIC_API_KEY is not set — the UI will load, but questions will fail.", file=sys.stderr)
-    if not os.path.exists(db_path):
-        print(f"WARNING: no ledger found at {db_path}. Run `ingest` first, or the UI will report it's not ready.", file=sys.stderr)
+
+    if mode == "demo":
+        # A demo instance never opens a real ledger: each visitor gets a throwaway copy of the
+        # synthetic seed. Passing --db here would be silently ignored, so say so instead.
+        if args.db or args.client:
+            print("In demo mode --db/--client are ignored: visitors get their own sample ledger.", file=sys.stderr)
+        db_path = ":demo:"
+        if not os.path.exists(demo.seed_path()):
+            print(f"WARNING: no demo seed at {demo.seed_path()}. Run `build-demo-seed` first, or visitors "
+                  "will start with an empty ledger.", file=sys.stderr)
+    else:
+        db_path = _resolve_db_or_exit(args)
+        if not os.path.exists(db_path):
+            print(f"WARNING: no ledger found at {db_path}. Run `ingest` first, or the UI will report it's not ready.",
+                  file=sys.stderr)
+        if mode == "owner" and not auth.stored_hash():
+            print("ERROR: owner mode needs a passphrase. Run `set-passphrase` first.", file=sys.stderr)
+            raise SystemExit(2)
 
     from .web.app import create_app
 
     app = create_app(db_path=db_path)
-    print(f"Serving on http://127.0.0.1:{args.port} (ledger: {db_path})")
-    app.run(host="127.0.0.1", port=args.port, debug=False)
+    host = args.host or ("127.0.0.1" if mode == "local" else "0.0.0.0")
+    where = "a throwaway sample ledger per visitor" if mode == "demo" else db_path
+    print(f"Serving on http://{host}:{args.port} (mode: {mode}, ledger: {where})")
+    if mode != "local":
+        print("Put this behind HTTPS — the session cookie is marked Secure and will not be sent over plain HTTP.")
+    app.run(host=host, port=args.port, debug=False)
+
+
+def _cmd_set_passphrase(args: argparse.Namespace) -> None:
+    """Set the passphrase that owner mode asks for. Never echoes it, never stores it in plain text."""
+    import getpass
+
+    from .web import auth
+
+    passphrase = os.environ.get("STATEMENT_AGENT_NEW_PASSPHRASE") or getpass.getpass("New passphrase: ")
+    if len(passphrase) < 12:
+        print("Use at least 12 characters. This is the only thing standing between the internet and "
+              "your statements.", file=sys.stderr)
+        raise SystemExit(2)
+    if not os.environ.get("STATEMENT_AGENT_NEW_PASSPHRASE") and passphrase != getpass.getpass("Again: "):
+        print("Those didn't match.", file=sys.stderr)
+        raise SystemExit(2)
+    path = auth.save_passphrase(passphrase)
+    print(f"Saved to {path} (readable only by you). Only the scrypt hash is stored.")
+    print("For a host that has no disk to keep it on, set this environment variable instead:")
+    print(f"  STATEMENT_AGENT_PASSPHRASE_HASH='{auth.stored_hash()}'")
+
+
+def _cmd_build_demo_seed(args: argparse.Namespace) -> None:
+    """Build the synthetic ledger every demo visitor starts from, out of dataset_public/."""
+    from .ingest.pipeline import ingest_folder
+    from .web import demo
+
+    source = args.source
+    if not os.path.isdir(source):
+        print(f"No such folder: {source}", file=sys.stderr)
+        raise SystemExit(2)
+    target = args.out or demo.seed_path()
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    if os.path.exists(target):
+        os.remove(target)
+    store = Store(target)
+    try:
+        reports = ingest_folder(source, store, attempt_vision=bool(os.environ.get("ANTHROPIC_API_KEY")))
+        for report in reports:
+            note = f" — {report.warnings[0]}" if report.warnings else ""
+            print(f"  {report.status:>22}  {os.path.basename(report.file_path)}{note}", file=sys.stderr)
+        count = len(store.all_transactions())
+        documents = len(store.all_documents_as_dicts())
+    finally:
+        store.close()
+    print(f"Demo seed written to {target}: {count} transactions from {documents} document(s), all synthetic.")
 
 
 def _cmd_imports(args: argparse.Namespace) -> None:
@@ -315,7 +383,17 @@ def main() -> None:
     p_serve.add_argument("--db", default=None, help="ledger DB path (default: ledger.db)")
     p_serve.add_argument("--client", default=None, help="named client from clients.json, instead of --db")
     p_serve.add_argument("--port", type=int, default=5050)
+    p_serve.add_argument("--host", default=None,
+                         help="address to bind (default: 127.0.0.1 locally, 0.0.0.0 in owner/demo mode)")
     p_serve.set_defaults(func=_cmd_serve)
+
+    p_pass = sub.add_parser("set-passphrase", help="set the passphrase owner mode asks for")
+    p_pass.set_defaults(func=_cmd_set_passphrase)
+
+    p_seed = sub.add_parser("build-demo-seed", help="build the synthetic ledger demo visitors start from")
+    p_seed.add_argument("--source", default="dataset_public", help="folder of synthetic statements")
+    p_seed.add_argument("--out", default=None, help="where to write the seed (default: the demo root)")
+    p_seed.set_defaults(func=_cmd_build_demo_seed)
 
     p_imports = sub.add_parser("imports", help="list import jobs recorded in the ledger")
     p_imports.add_argument("--db", default=None, help="ledger DB path (default: ledger.db)")

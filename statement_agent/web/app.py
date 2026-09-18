@@ -28,7 +28,10 @@ calls must carry the page's CSRF token in an X-CSRF-Token header: this server li
 localhost, and without it any website open in the same browser could post files or questions to
 it (a multipart form POST needs no CORS preflight).
 
-This is still a local, single-user tool: no accounts or authentication. See NOT_IMPLEMENTED.md §I.
+Where this runs is decided by STATEMENT_AGENT_MODE (see auth.py): `local` is the original
+single-user tool with no login, `owner` puts one passphrase in front of your own ledger, and `demo`
+serves a throwaway copy of the synthetic sample data to each visitor and cannot open a real ledger
+at all (see demo.py).
 """
 
 from __future__ import annotations
@@ -40,9 +43,9 @@ import time
 import uuid
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date
+from datetime import date, timedelta
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.exceptions import HTTPException
 from werkzeug.utils import secure_filename
 
@@ -57,6 +60,7 @@ from ..ingest.sniff import detect_encoding
 from ..ingest.vocab import KNOWN_CURRENCIES, ROLE_LABELS, ROLES
 from ..schema import EconomicType, ImportState
 from ..store import Store
+from . import auth, demo, redact
 
 # Where browser uploads are kept, one server-generated directory per import — separate from
 # dataset_public/ since this holds people's real financial documents. Gitignored.
@@ -127,15 +131,63 @@ def create_app(db_path: str = "ledger.db", *, upload_dir: str = UPLOAD_DIR, run_
     app.config["UPLOAD_DIR"] = upload_dir
     app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES * MAX_FILES_PER_REQUEST + 1024 * 1024
     app.config["CSRF_TOKEN"] = secrets.token_urlsafe(32)
+    app.config["MODE"] = auth.mode()
     executor = None if run_imports_inline else ThreadPoolExecutor(max_workers=2, thread_name_prefix="import")
 
-    if os.path.exists(db_path):
+    key, durable = auth.secret_key()
+    app.secret_key = key
+    app.config.update(
+        SESSION_COOKIE_HTTPONLY=True,
+        SESSION_COOKIE_SAMESITE="Lax",
+        # Only send the session cookie over HTTPS once this is on a network. A browser drops a
+        # Secure cookie on a plain-HTTP origin, so trying demo/owner mode locally without TLS needs
+        # STATEMENT_AGENT_INSECURE_COOKIES=1 — never set that on anything reachable from outside.
+        SESSION_COOKIE_SECURE=(app.config["MODE"] != "local"
+                               and os.environ.get("STATEMENT_AGENT_INSECURE_COOKIES") != "1"),
+        PERMANENT_SESSION_LIFETIME=timedelta(days=14),
+    )
+    if app.config["MODE"] != "local" and not durable:
+        app.logger.warning("STATEMENT_AGENT_SECRET_KEY is not set: everyone is signed out on restart.")
+
+    login_throttle = auth.LoginThrottle()
+
+    if app.config["MODE"] != "local":
+        # once this is on a network the logs are no longer only yours to read
+        redact.install()
+        app.logger.addFilter(redact.RedactingFilter())
+
+    def _db_path() -> str:
+        """The ledger this request may use.
+
+        In demo mode this never consults configuration: it is derived from the visitor's own session
+        and checked to be inside the demo area, so a demo instance cannot serve a real ledger.
+        """
+        if app.config["MODE"] == "demo":
+            return demo.sandbox_paths(_sandbox_id())[0]
+        return app.config["DB_PATH"]
+
+    def _upload_dir() -> str:
+        if app.config["MODE"] == "demo":
+            return demo.sandbox_paths(_sandbox_id())[1]
+        return app.config["UPLOAD_DIR"]
+
+    def _sandbox_id() -> str:
+        sandbox_id = session.get(demo.SESSION_KEY)
+        if not sandbox_id:
+            sandbox_id = uuid.uuid4().hex
+            session[demo.SESSION_KEY] = sandbox_id
+            session.permanent = True
+        return sandbox_id
+
+    if app.config["MODE"] == "demo":
+        demo.sweep()  # clear anything a previous run left behind before taking any traffic
+    elif os.path.exists(db_path):
         store = Store(db_path)
         store.fail_interrupted_jobs()
         store.close()
 
     def _store() -> Store:
-        return Store(app.config["DB_PATH"])
+        return Store(_db_path())
 
     def _analyze(job_id: str) -> None:
         store = _store()
@@ -152,7 +204,7 @@ def create_app(db_path: str = "ledger.db", *, upload_dir: str = UPLOAD_DIR, run_
 
     def _discard_upload(stored_path: str) -> None:
         path = os.path.realpath(stored_path)
-        root = os.path.realpath(app.config["UPLOAD_DIR"])
+        root = os.path.realpath(_upload_dir())
         if path.startswith(root + os.sep):  # never delete a file the CLI imported from the user's own folder
             shutil.rmtree(os.path.dirname(path), ignore_errors=True)
 
@@ -182,6 +234,58 @@ def create_app(db_path: str = "ledger.db", *, upload_dir: str = UPLOAD_DIR, run_
         return None
 
     @app.before_request
+    def _require_login():
+        """Deny by default. A route added later is protected without anyone remembering to do it.
+
+        Only auth.PUBLIC_PATHS are open. In local mode there is nothing to sign in to and this lets
+        everything through, so running it on your own machine is unchanged.
+        """
+        if not auth.needs_login() or auth.is_public_path(request.path):
+            return None
+        if session.get("signed_in") is True:
+            return None
+        if request.path.startswith("/api/"):
+            return _error("Please sign in again.", 401)
+        return redirect(url_for("login"))
+
+    @app.route("/healthz")
+    def healthz():
+        """For a host's health check. Says nothing about the data — only that the process is up."""
+        return jsonify({"ok": True, "mode": app.config["MODE"]})
+
+    @app.route("/login", methods=["GET", "POST"])
+    def login():
+        if not auth.needs_login():
+            return redirect(url_for("index"))
+        expected = auth.stored_hash()
+        client = request.remote_addr or "?"
+        if request.method == "GET":
+            return render_template("login.html", error=None, configured=bool(expected)), 200
+
+        if not expected:
+            # no passphrase set: say so plainly rather than letting anyone in
+            return render_template("login.html", configured=False,
+                                   error="No passphrase has been set on this server yet."), 503
+        if login_throttle.blocked(client):
+            wait = login_throttle.seconds_until_retry(client)
+            return render_template("login.html", configured=True,
+                                   error=f"Too many attempts. Try again in about {wait // 60 + 1} minute(s)."), 429
+        if not auth.verify_passphrase(request.form.get("passphrase", ""), expected):
+            login_throttle.record_failure(client)
+            return render_template("login.html", configured=True, error="That passphrase didn't match."), 401
+
+        login_throttle.clear(client)
+        session.clear()  # new session id on sign-in, so a fixed cookie cannot be reused
+        session["signed_in"] = True
+        session.permanent = True
+        return redirect(url_for("index"))
+
+    @app.route("/logout", methods=["GET", "POST"])
+    def logout():
+        session.clear()
+        return redirect(url_for("login") if auth.needs_login() else url_for("index"))
+
+    @app.before_request
     def _csrf():
         if request.path.startswith("/api/") and request.method in _STATE_CHANGING:
             token = request.headers.get("X-CSRF-Token", "")
@@ -206,11 +310,14 @@ def create_app(db_path: str = "ledger.db", *, upload_dir: str = UPLOAD_DIR, run_
 
     @app.route("/")
     def index():
-        return render_template("index.html", csrf_token=app.config["CSRF_TOKEN"])
+        if app.config["MODE"] == "demo":
+            demo.touch(_sandbox_id())
+        return render_template("index.html", csrf_token=app.config["CSRF_TOKEN"],
+                               mode=app.config["MODE"], demo_ttl_minutes=demo.SANDBOX_TTL_SECONDS // 60)
 
     @app.route("/api/status")
     def status():
-        path = app.config["DB_PATH"]
+        path = _db_path()
         from ..groq_categorize import groq_enabled
 
         has_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
@@ -220,6 +327,7 @@ def create_app(db_path: str = "ledger.db", *, upload_dir: str = UPLOAD_DIR, run_
                 "reason": "No statements added yet — add one below, or run "
                           "`python -m statement_agent.cli ingest` from the command line.",
                 "transaction_count": 0, "document_count": 0, "has_api_key": has_key, "groq": groq_enabled(),
+                "mode": app.config["MODE"],
             })
         store = _store()
         ledger = store.all_transactions()
@@ -229,7 +337,7 @@ def create_app(db_path: str = "ledger.db", *, upload_dir: str = UPLOAD_DIR, run_
             "ready": bool(ledger),
             "reason": None if ledger else "No transactions yet — add a statement below.",
             "transaction_count": len(ledger), "document_count": len(documents), "has_api_key": has_key,
-            "groq": groq_enabled(),
+            "groq": groq_enabled(), "mode": app.config["MODE"],
         })
 
     # -- imports -----------------------------------------------------------------------
@@ -268,7 +376,7 @@ def create_app(db_path: str = "ledger.db", *, upload_dir: str = UPLOAD_DIR, run_
                     continue
 
                 job_id = str(uuid.uuid4())
-                job_dir = os.path.join(app.config["UPLOAD_DIR"], job_id)  # server-generated, one per import
+                job_dir = os.path.join(_upload_dir(), job_id)  # server-generated, one per import
                 os.makedirs(job_dir, exist_ok=True)
                 dest = os.path.join(job_dir, safe)
                 f.save(dest)
@@ -295,7 +403,7 @@ def create_app(db_path: str = "ledger.db", *, upload_dir: str = UPLOAD_DIR, run_
 
     @app.route("/api/imports", methods=["GET"])
     def list_imports():
-        if not os.path.exists(app.config["DB_PATH"]):
+        if not os.path.exists(_db_path()):
             return jsonify({"imports": []})
         store = _store()
         try:
@@ -380,7 +488,7 @@ def create_app(db_path: str = "ledger.db", *, upload_dir: str = UPLOAD_DIR, run_
 
         def run(store, job):
             path = os.path.realpath(job.stored_path)
-            if not path.startswith(os.path.realpath(app.config["UPLOAD_DIR"]) + os.sep):
+            if not path.startswith(os.path.realpath(_upload_dir()) + os.sep):
                 raise ImportConflict("Only files added through this page can be unlocked here.")
             unlock_import(store, job_id, data["password"], dest_path=path)
             job = store.get_job(job_id)
@@ -472,7 +580,7 @@ def create_app(db_path: str = "ledger.db", *, upload_dir: str = UPLOAD_DIR, run_
 
     @app.route("/api/links", methods=["GET"])
     def list_links():
-        if not os.path.exists(app.config["DB_PATH"]):
+        if not os.path.exists(_db_path()):
             return jsonify({"links": [], "recurring": []})
 
         def run(store):
@@ -521,7 +629,7 @@ def create_app(db_path: str = "ledger.db", *, upload_dir: str = UPLOAD_DIR, run_
 
     @app.route("/api/transactions", methods=["GET"])
     def list_transactions():
-        if not os.path.exists(app.config["DB_PATH"]):
+        if not os.path.exists(_db_path()):
             return jsonify({"total": 0, "transactions": [], "categories": [], "rules": []})
 
         def run(store):
@@ -594,7 +702,7 @@ def create_app(db_path: str = "ledger.db", *, upload_dir: str = UPLOAD_DIR, run_
     def export_csv():
         from ..agent.tools import export_csv as to_csv, export_rows
 
-        if not os.path.exists(app.config["DB_PATH"]):
+        if not os.path.exists(_db_path()):
             return _error("Nothing to export yet.", 404)
 
         def run(store):
@@ -618,7 +726,7 @@ def create_app(db_path: str = "ledger.db", *, upload_dir: str = UPLOAD_DIR, run_
 
         def run(store):
             store.wipe()
-            root = app.config["UPLOAD_DIR"]
+            root = _upload_dir()
             if os.path.isdir(root):
                 for name in os.listdir(root):
                     shutil.rmtree(os.path.join(root, name), ignore_errors=True)
@@ -672,7 +780,7 @@ def create_app(db_path: str = "ledger.db", *, upload_dir: str = UPLOAD_DIR, run_
         if not os.environ.get("ANTHROPIC_API_KEY"):
             return _error("ANTHROPIC_API_KEY is not set on the server.", 500)
 
-        path = app.config["DB_PATH"]
+        path = _db_path()
         if not os.path.exists(path):
             return _error(f"No ledger found at '{path}'. Add a statement (or run ingest) first.", 400)
 
